@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Flippen Lekka Scan Station — v5 (cleaned + 100×150 print lock)</title>
+<style>
+  :root{
+    --bg-dark:#0f172a; --panel-dark:#1e2537; --accent:#38bdf8;
+    --radius-lg:.75rem; --radius-md:.5rem;
+    --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,Inter,Roboto,"Segoe UI",system-ui,sans-serif;
+    --print-scale:1.0; /* safe inner scaling for printers that overscan */
+  }
+  *{box-sizing:border-box}
+  body{
+    background:radial-gradient(circle at 20% 20%, rgba(56,189,248,.12) 0%, rgba(15,23,42,0) 60%),
+               radial-gradient(circle at 80% 30%, rgba(244,114,182,.08) 0%, rgba(15,23,42,0) 60%),
+               var(--bg-dark);
+    color:#fff; font-family:var(--sans); min-height:100dvh; margin:0;
+    display:flex; justify-content:center; padding:2rem;
+  }
+  .shell{
+    width:100%; max-width:1180px; background:rgba(15,23,42,.6);
+    box-shadow:0 30px 80px rgba(0,0,0,.9), 0 0 120px rgba(56,189,248,.2) inset;
+    backdrop-filter:blur(18px) saturate(140%);
+    display:grid; grid-template-columns:1fr 1fr; overflow:hidden;
+  }
+  @media (max-width:1000px){ .shell{ grid-template-columns:1fr; } }
+
+  /* LEFT */
+  .leftPane{ background:linear-gradient(to bottom right, rgba(30,37,55,.9), rgba(15,23,42,0));
+             padding:1.25rem; border-right:1px solid rgba(148,163,184,.15); }
+  @media (max-width:1000px){ .leftPane{ border-right:0; border-bottom:1px solid rgba(148,163,184,.15);} }
+  .headerRow{ display:flex; align-items:flex-start; justify-content:space-between; gap:.75rem; flex-wrap:wrap; margin-bottom:.75rem; }
+  .line1{ font-size:.95rem; font-weight:700; color:#e2e8f0; display:flex; gap:.5rem 1rem; align-items:center; flex-wrap:wrap; }
+  .badge{ background:rgba(56,189,248,.15); border:1px solid rgba(56,189,248,.5); color:var(--accent); font-size:1.1rem; border-radius:var(--radius-md); padding:.2rem .45rem; }
+  .sessionInfo{ font-size:.8rem; color:#94a3b8; line-height:1.4; font-family:var(--mono);} 
+  .scanBox,.addrBox,.card{ background:#0a0f1d; border:1px solid rgba(148,163,184,.3); border-radius:var(--radius-md); padding:.75rem; }
+  .scanBox{ margin-bottom:1rem; }
+  .scanBox label{ display:flex; justify-content:space-between; align-items:baseline; font-size:.75rem; color:#cbd5e1; margin-bottom:.5rem; }
+  .scanBox label small{ color:#64748b; font-weight:400; font-size:.7rem; }
+  #scanInput{ width:100%; background:#1e2537; border:1px solid rgba(148,163,184,.4); border-radius:var(--radius-md); color:#fff; font-family:var(--mono); font-size:1rem; outline:none; padding:.5rem .6rem; }
+  #scanInput:focus{ border-color:var(--accent); box-shadow:0 0 20px rgba(56,189,248,.4); }
+
+  /* Address picker */
+  .addrBox{ margin-bottom:1rem; }
+  .addrBox .row{ display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem; }
+  .addrBox label{ font-size:.75rem; color:#cbd5e1; display:block; margin-bottom:.35rem; }
+  #addrSearch,#placeCode{ flex:1; background:#1e2537; border:1px solid rgba(148,163,184,.4); border-radius:var(--radius-md); color:#fff; font-family:var(--mono); font-size:.9rem; padding:.35rem .5rem; outline:none; }
+  #addrSearch:focus,#placeCode:focus{ border-color:var(--accent); box-shadow:0 0 16px rgba(56,189,248,.35); }
+  #placeCode{ width:140px; }
+  .addrList{ max-height:160px; overflow:auto; border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); background:#0b1222; }
+  .addrItem{ padding:.5rem; border-bottom:1px solid rgba(148,163,184,.15); font-size:.74rem; cursor:pointer; }
+  .addrItem:hover{ background:rgba(56,189,248,.08); }
+  .addrHint{ font-size:.7rem; color:#94a3b8; margin-top:.35rem; }
+
+  /* Small cards */
+  .minigrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(min(260px,100%),1fr)); gap:.75rem; }
+  .cardHeader{ font-size:.7rem; color:#94a3b8; font-weight:700; margin-bottom:.5rem; }
+  .cardBody{ font-family:var(--mono); font-size:1.72rem; line-height:1.4; color:#e2e8f0; white-space:pre-wrap; word-break:break-word; }
+  #debugLog{ display:none; background:#0a0f1d; border:1px solid rgba(248,113,113,.4); color:#f87171; font-family:var(--mono); font-size:.7rem; line-height:1.4; border-radius:var(--radius-md); padding:.75rem; margin-top:1rem; max-height:180px; overflow:auto; white-space:pre-wrap; }
+
+  /* RIGHT */
+  .rightPane{ padding:1.25rem; display:flex; flex-direction:column; background:radial-gradient(circle at 50% 0%, rgba(56,189,248,.15) 0%, rgba(0,0,0,0) 70%), linear-gradient(to bottom right, rgba(15,23,42,.6), rgba(30,37,55,.4)); }
+  .sectionTitle{ font-size:.82rem; color:#e2e8f0; font-weight:700; display:flex; justify-content:space-between; gap:.5rem 1rem; margin-bottom:.6rem; }
+  .statusChip{ font-size:.7rem; background:rgba(15,23,42,.6); border:1px solid rgba(148,163,184,.3); border-radius:var(--radius-md); padding:.35rem .5rem; color:#94a3b8; }
+  .summaryCard{ background:#0a0f1d; border:1px solid rgba(148,163,184,.3); border-radius:var(--radius-md); padding:.75rem; margin-bottom:.8rem; font-family:var(--mono); font-size:.7rem; line-height:1.4; color:#38bdf8; white-space:pre-wrap; word-break:break-word; max-height:240px; overflow:auto; }
+  .waybillSheetPreview{ background:#fff; color:#000; border-radius:var(--radius-md); padding:.75rem; font-family:var(--mono); font-size:.72rem; line-height:1.4; min-height:180px; overflow:auto; }
+
+  /* ===== PRINT LOCK (100×150mm exact) ===== */
+  @media print{
+    @page{ size:100mm 150mm; margin:0; }
+    html,body{ margin:0!important; padding:0!important; }
+    .shell{ display:none!important; }
+    .printSheetWrapper{ display:block!important; }
+    .wb100x150{
+      width:calc(100mm / var(--print-scale))!important;
+      height:calc(150mm / var(--print-scale))!important;
+      transform:scale(var(--print-scale)); transform-origin:top left;
+      page-break-after:always; break-inside:avoid; overflow:hidden; background:#fff;
+    }
+    img{ print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  }
+
+  .printSheetWrapper{ display:none; padding:0; }
+  .wbPreviewZoom{ display:inline-block; transform:scale(.6); transform-origin:top left; }
+
+  /* ===== Waybill rubric (grid canvas) ===== */
+  .wb100x150{
+    box-sizing:border-box; padding:3mm 3.5mm; color:#000; font-family:var(--mono);
+    display:grid; grid-template-rows:18mm auto 52mm; row-gap:2mm;
+  }
+  .wbHead{ display:grid; grid-template-columns:1fr auto; grid-template-rows:auto auto 1fr; column-gap:3mm; row-gap:1mm; }
+  .wbHeadTitle{ grid-column:1/2; grid-row:1; font-size:3.6mm; line-height:1.2; font-weight:700; }
+  .wbSvcImg{ grid-column:2/3; grid-row:1/span 3; justify-self:end; align-self:start; display:inline-flex; align-items:center; justify-content:center; padding:.5mm 1mm; overflow:hidden; }
+  .wbSvcFallback{ font-weight:700; font-size:3mm; letter-spacing:.2mm; }
+ .wbTopCode svg{
+  max-width:100%;
+  height:auto;
+  display:block;
+}
+.wbTopCode{ grid-column:1/2; grid-row:1; display:flex; flex-direction:column; align-items:left; gap:0mm; }
+  .wbTopHuman{ font-size:4.2mm; font-weight:700; }
+
+  .wbBody{ display:grid;  gap:2mm 3mm; margin-top:2mm; }
+  .wbFrom,.wbTo{ border:1px solid #000; border-radius:1mm; padding:2mm; font-size:3mm; line-height:1.32; background:#fff; }
+  .wbTo{ background:#f7f7f7; }
+  .wbBigCode{ grid-column:1/-1; border:1px solid #000; border-radius:1mm; padding:2mm; display:grid; grid-template-rows:auto 1fr auto; row-gap:1mm; }
+  .wbBigHuman{ font-size:3.6mm; font-weight:700; text-align:center; }
+  .wbBigCode svg{ width:100%; height:15mm; display:block; }
+  .wbMetaRow{ display:flex; justify-content:space-between; font-size:3mm; }
+  .wbFoot{ border-top:1px dashed #000; padding-top:2mm; display:grid; grid-template-columns:1fr; grid-auto-rows:minmax(0,1fr); row-gap:2mm; }
+  .podBox{ border:1px solid #000; border-radius:1mm; padding:2mm; font-size:3.2mm; line-height:1.35; display:grid; grid-template-rows:auto auto auto auto; row-gap:2mm; margin:0 auto; width:300px; }
+  .podTitle{  font-size: 12px; font-weight:700; }
+
+  /* ==== DISPATCH WHITEBOARD ==== */
+  .dispatchStamp{
+    font-size:.7rem;
+    color:#94a3b8;
+    font-family:var(--mono);
+  }
+
+  .dispatchBoard{
+    background:#f9fafb;
+    border-radius:var(--radius-md);
+    border:1px solid #e5e7eb;
+    padding:.75rem;
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:.5rem;
+    color:#111827;
+    font-family:var(--mono);
+    min-height:220px;
+  }
+  @media (max-width:1100px){
+    .dispatchBoard{ grid-template-columns:repeat(3,minmax(0,1fr)); }
+  }
+  @media (max-width:800px){
+    .dispatchBoard{ grid-template-columns:repeat(2,minmax(0,1fr)); }
+  }
+  @media (max-width:600px){
+    .dispatchBoard{ grid-template-columns:1fr; }
+  }
+
+  .dispatchBoardEmpty{
+    grid-column:1/-1;
+    text-align:center;
+    font-size:.75rem;
+    color:#6b7280;
+    padding:.75rem 0;
+  }
+
+  .dispatchColumn{
+    border-left:2px solid rgba(148,163,184,.7);
+    padding-left:.5rem;
+    position:relative;
+  }
+  .dispatchColumn:first-child{ border-left:none; }
+
+  .dispatchColumnHeader{
+    font-size:.75rem;
+    font-weight:700;
+    letter-spacing:.03em;
+    text-transform:uppercase;
+    color:#6b7280;
+    margin-bottom:.25rem;
+  }
+
+  .dispatchLaneEmpty{
+    font-size:.72rem;
+    color:#9ca3af;
+    margin-top:.25rem;
+  }
+
+  .dispatchCard{
+    border:1px solid #cbd5e1;
+    border-radius:.35rem;
+    padding:.35rem .45rem;
+    margin-bottom:.35rem;
+    background:#fff;
+    box-shadow:0 1px 2px rgba(15,23,42,.08);
+    font-size:.7rem;
+  }
+  .dispatchCardTitle{
+    font-weight:700;
+    margin-bottom:.15rem;
+    display:flex;
+    justify-content:space-between;
+    gap:.25rem;
+    font-size:.72rem;
+  }
+  .dispatchCardMeta{
+    font-weight:400;
+    color:#6b7280;
+    font-size:.68rem;
+  }
+  .dispatchCardBody{
+    white-space:pre-line;
+    margin-bottom:.2rem;
+  }
+  .dispatchCardFooter{
+    font-size:.65rem;
+    color:#6b7280;
+    display:flex;
+    justify-content:space-between;
+  }
+  .dispatchEmpty{
+    color:#9ca3af;
+  }
+
+/* === FULLSCREEN DISPATCH BOARD === */
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0f172a;
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
+  color: #fff;
+  overflow-x: hidden;
+}
+
+/* full width container */
+#dispatchBoardContainer {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* lanes across the screen */
+#dispatchBoard {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.25rem;
+  padding: 1rem 1.5rem;
+  flex: 1;
+  overflow-y: auto;
+  background: radial-gradient(circle at 30% 20%, rgba(56,189,248,0.08), transparent 60%);
+}
+
+/* column headers */
+.dispatchColHeader {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #38bdf8;
+  margin-bottom: 0.5rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* cards in columns */
+.dispatchCard {
+  background: #1e2537;
+  border: 1px solid rgba(148,163,184,0.25);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dispatchCard:hover {
+  transform: scale(1.02);
+  box-shadow: 0 4px 12px rgba(56,189,248,0.25);
+}
+
+.dispatchCardTitle {
+  font-weight: 600;
+  font-size: 1rem;
+  color: #f8fafc;
+  margin-bottom: 0.35rem;
+}
+
+.dispatchCardMeta {
+  font-size: 0.75rem;
+  color: #94a3b8;
+  margin-bottom: 0.5rem;
+}
+
+.dispatchCardLines {
+  font-size: 0.8rem;
+  color: #cbd5e1;
+  line-height: 1.3;
+  white-space: pre-line;
+}
+
+.dispatchColBody {
+  overflow-y: auto;
+  max-height: calc(100vh - 5rem);
+  padding-right: 4px;
+}
+
+/* lane separation */
+.dispatchCol {
+  display: flex;
+  flex-direction: column;
+  background: rgba(15,23,42,0.7);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+</style>
+</head>
+ <body>
+
+
+  <div id="dispatchBoardContainer">
+    <div id="dispatchBoard"> <div class="sectionTitle" style="margin-top:.4rem">
+      <span>Dispatch Whiteboard</span>
+      <span id="dispatchStamp" class="dispatchStamp">–</span>
+    </div>
+    <div class="dispatchBoard" id="dispatchBoard">
+      <div class="dispatchBoardEmpty">Loading open orders…</div>
+    </div></div>
+  </div>
+
+
+
+<div class="shell" role="application" aria-label="Flippen Lekka Scan Station">
+  <!-- LEFT -->
+  <section class="leftPane">
+    <div class="headerRow">
+      <div class="line1">Flippen Lekka Scan Station <span class="badge" aria-live="polite">v0.3</span></div>
+      <div class="sessionInfo" aria-live="polite">
+        <div>Order: <span id="uiOrderNo">--</span></div>
+        <div>Parcels scanned: <span id="uiParcelCount">0</span></div>
+      
+      </div>
+    </div>
+
+    <!-- Scanner input -->
+    <div class="scanBox">
+      <label for="scanInput"><span>Scan parcel sticker barcode</span><small>Example: 252051001</small></label>
+      <input id="scanInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Focus here. Scanner types then Enter." aria-describedby="scanHelp" />
+      <div id="scanHelp" class="addrHint"><br>HOW IT WORKS: 
+      <ul>
+        <li>An order can only be booked once. Once a shipment was successfully created for an order, a manual override is needed.</li>
+        <li>There is a 6 second timer that starts to run after each scan and resets on each new scan. When that timer runs out, the system proceeds with booking the shipment. Then resets the session, ready for a new scan</li>
+     <li>
+      </ul></div>
+      <!-- Add this somewhere in your Scan view controls -->
+<button id="btnBookNow" class="btn btnPrimary" hidden>BOOK NOW</button>
+
+    </div>
+
+    <!-- Address search/select (toggle display if needed) -->
+    <div class="addrBox" id="addrBox" hidden>
+      <label>Destination address <span class="addrHint" style="font-weight:400">(search & select)</span></label>
+      <div class="row">
+        <input id="addrSearch" type="text" placeholder="Type name, city, postal, street…" />
+        <input id="placeCode" type="text" placeholder="place code" title="ParcelPerfect place code (optional)" />
+      </div>
+      <div class="addrList" id="addrResults" role="listbox" aria-label="Address results"></div>
+      <div class="addrHint">Tip: selecting an item sets the destination and its place code (if present). You can paste a code too.</div>
+    </div>
+
+    <!-- Service override (toggle display if needed) -->
+    <div class="card" id="svcBox" hidden>
+      <div class="cardHeader">Service</div>
+      <div class="svcRow">
+        <label for="serviceOverride" class="addrHint" style="font-size:.8rem">Prefer:</label>
+        <select id="serviceOverride" title="Choose a service or Auto">
+          <option value="AUTO">Auto (RFX→ECO→RDF→first)</option>
+          <option value="RFX">RFX (Road Express)</option>
+          <option value="ECO">ECO (Economy Road)</option>
+          <option value="RDF" selected>RDF (Roadfreight)</option>
+          <option value="ONX">ONX (Overnight Air)</option>
+          <option value="OVN">OVN (Overnight 2)</option>
+          <option value="CSS">CSS (ChainStores)</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Info cards -->
+    <div class="minigrid">
+      <div class="card"><div class="cardHeader">Session Parcels</div><div class="cardBody" id="parcelList">No parcels scanned yet.</div></div>
+      <div class="card"><div class="cardHeader">Ship To</div><div class="cardBody" id="shipToCard">None yet.</div></div>
+      
+        <div id="last-booking" class="card">
+  <div class="card-title">Last Booking Status</div>
+  <div id="last-booking-body"></div>
+</div>
+    </div>
+    <div id="debugLog" aria-live="polite"></div>
+  </section>
+
+  <!-- RIGHT -->
+  <section class="rightPane">
+
+
+    <!-- existing label preview below this -->
+    <div class="sectionTitle" style="margin-top:.8rem">
+    <button id="modeToggle" type="button">MODE: AUTO</button>
+
+    </div>
+    <div class="waybillSheetPreview" id="stickerPreview" aria-live="polite">
+      (Will show label after first booking)
+    </div>
+
+    <div class="sectionTitle" style="margin-top:.4rem"><span>Waybill Label Preview (100×150 mm)</span><span style="font-size:.7rem;color:#94a3b8;font-family:var(--mono)">auto prints after booking</span></div>
+    <div class="waybillSheetPreview" id="stickerPreview" aria-live="polite">(Will show label after first booking)</div>
+  </section>
+</div>
+
+<!-- PRINT-ONLY MOUNT -->
+<div class="printSheetWrapper"><div id="printMount"></div></div>
+
+<script src="/app.js"></script>
+</body> 
+</html>
