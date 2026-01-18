@@ -368,6 +368,8 @@ app.get("/shopify/orders/open", async (req, res) => {
         created_at: o.processed_at || o.created_at,
         email: o.email,
         fulfillment_status: o.fulfillment_status,
+        tags: o.tags || "",
+        shipping_lines: (o.shipping_lines || []).map((line) => line.title || line.code || line.name || ""),
         shipping_city: shipping.city || "",
         shipping_postal: shipping.zip || "",
         shipping_address1: shipping.address1 || "",
