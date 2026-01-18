@@ -33,6 +33,7 @@
   const shipToCard = $("shipToCard");
   const parcelList = $("parcelList");
   const bookingSummary = $("bookingSummary");
+  const bookingSummaryCard = $("bookingSummaryCard");
   const statusChip = $("statusChip");
   const stickerPreview = $("stickerPreview");
   const debugLog = $("debugLog");
@@ -52,6 +53,13 @@
   const viewOps = $("viewOps");
   const actionFlash = $("actionFlash");
   const emergencyStopBtn = $("emergencyStop");
+  const modeToggleBtn = $("modeToggle");
+  const focusScannerBtn = $("focusScanner");
+  const toggleAddressBtn = $("toggleAddress");
+  const toggleServiceBtn = $("toggleService");
+  const copyShipToBtn = $("copyShipTo");
+  const serviceDisplay = $("serviceDisplay");
+  const autoModeStatus = $("autoModeStatus");
 
   const btnBookNow = $("btnBookNow");
 
@@ -63,9 +71,13 @@
   let armedForBooking = false;
 
   let placeCodeOverride = null;
-  let serviceOverride = "RFX";
+  let serviceOverride = "RDF";
   let addressBook = [];
   let bookedOrders = new Set();
+  let autoBookEnabled = true;
+  let autoBookEndAtMs = null;
+  let countdownInterval = null;
+  let dispatchNotes = {};
 
   const dbgOn = new URLSearchParams(location.search).has("debug");
   if (dbgOn && debugLog) debugLog.style.display = "block";
@@ -106,12 +118,58 @@
     debugLog.scrollTop = debugLog.scrollHeight;
   };
 
+  function updateCountdownDisplay() {
+    if (!uiCountdown) return;
+    if (!autoBookEndAtMs) {
+      uiCountdown.textContent = "--";
+      return;
+    }
+    const remainingMs = autoBookEndAtMs - Date.now();
+    if (remainingMs <= 0) {
+      uiCountdown.textContent = "0";
+      autoBookEndAtMs = null;
+      return;
+    }
+    uiCountdown.textContent = String(Math.ceil(remainingMs / 1000));
+  }
+
+  function startCountdownTicker() {
+    if (countdownInterval) return;
+    countdownInterval = setInterval(updateCountdownDisplay, 250);
+  }
+
+  function stopCountdownTicker() {
+    if (!countdownInterval) return;
+    clearInterval(countdownInterval);
+    countdownInterval = null;
+  }
+
   function renderCountdown() {
-    if (uiCountdown) uiCountdown.textContent = "--";
+    updateCountdownDisplay();
   }
 
   function money(v) {
     return v == null || isNaN(v) ? "-" : `R${Number(v).toFixed(2)}`;
+  }
+
+  function setBookingSummary(text) {
+    if (bookingSummary) bookingSummary.textContent = text;
+    if (bookingSummaryCard) bookingSummaryCard.textContent = text;
+  }
+
+  function updateModeToggleButton() {
+    if (!modeToggleBtn) return;
+    modeToggleBtn.textContent = `MODE: ${autoBookEnabled ? "AUTO" : "MANUAL"}`;
+    modeToggleBtn.classList.toggle("btnPrimary", autoBookEnabled);
+  }
+
+  function updateAutoModeUI() {
+    if (autoModeStatus) autoModeStatus.textContent = autoBookEnabled ? "ON" : "OFF";
+    updateModeToggleButton();
+  }
+
+  function updateServiceDisplay() {
+    if (serviceDisplay) serviceDisplay.textContent = serviceOverride || "Auto";
   }
 function isAutoBookOrder(details) {
   return hasParcelCountTag(details);
@@ -128,6 +186,52 @@ function isAutoBookOrder(details) {
     try {
       localStorage.setItem("fl_booked_orders_v1", JSON.stringify([...bookedOrders]));
     } catch {}
+  }
+
+  function loadDispatchNotes() {
+    try {
+      const raw = localStorage.getItem("fl_dispatch_notes_v1");
+      dispatchNotes = raw ? JSON.parse(raw) : {};
+    } catch {
+      dispatchNotes = {};
+    }
+  }
+
+  function saveDispatchNotes() {
+    try {
+      localStorage.setItem("fl_dispatch_notes_v1", JSON.stringify(dispatchNotes));
+    } catch {}
+  }
+
+  function getDispatchKey(order) {
+    return String(order?.id || order?.name || "");
+  }
+
+  function getDispatchEntry(order) {
+    const key = getDispatchKey(order);
+    if (!key) return { status: "not_started", boxes: "", notes: "" };
+    if (!dispatchNotes[key]) {
+      dispatchNotes[key] = { status: "not_started", boxes: "", notes: "" };
+    }
+    return dispatchNotes[key];
+  }
+
+  function updateDispatchBadge(card, status) {
+    const badge = card.querySelector(".dispatchBadge");
+    if (!badge) return;
+    const label =
+      status === "packing"
+        ? "Packing"
+        : status === "ready"
+        ? "Ready"
+        : status === "done"
+        ? "Completed"
+        : "Not started";
+    badge.textContent = label;
+    badge.classList.remove("status--packing", "status--ready", "status--done");
+    if (status === "packing") badge.classList.add("status--packing");
+    if (status === "ready") badge.classList.add("status--ready");
+    if (status === "done") badge.classList.add("status--done");
   }
 
   function markBooked(orderNo) {
@@ -211,11 +315,14 @@ let autoBookTimer = null;
 function cancelAutoBookTimer() {
   if (autoBookTimer) clearTimeout(autoBookTimer);
   autoBookTimer = null;
+  autoBookEndAtMs = null;
+  updateCountdownDisplay();
 }
 
 function scheduleIdleAutoBook() {
   cancelAutoBookTimer();
 
+  if (!autoBookEnabled) return;
   // Only for untagged orders
   if (!activeOrderNo || !orderDetails) return;
   if (isBooked(activeOrderNo)) return;
@@ -224,8 +331,14 @@ function scheduleIdleAutoBook() {
   // Need at least 1 scan
   if (parcelsForOrder.size <= 0) return;
 
+  autoBookEndAtMs = Date.now() + CONFIG.BOOKING_IDLE_MS;
+  updateCountdownDisplay();
+  startCountdownTicker();
+
   autoBookTimer = setTimeout(async () => {
     autoBookTimer = null;
+    autoBookEndAtMs = null;
+    updateCountdownDisplay();
 
     // Still valid?
     if (!activeOrderNo || !orderDetails) return;
@@ -335,6 +448,7 @@ function scheduleIdleAutoBook() {
     });
     serviceSelect?.addEventListener("change", () => {
       serviceOverride = serviceSelect.value || "AUTO";
+      updateServiceDisplay();
     });
   }
 
@@ -419,6 +533,8 @@ Email: ${orderDetails.email || ""}`.trim();
       statusExplain(hasParcelCountTag(orderDetails) ? "Scan parcels until complete." : "Scan parcels, then BOOK NOW.", "info");
     }
 
+    updateAutoModeUI();
+    updateServiceDisplay();
     updateBookNowButton();
   }
 
@@ -763,9 +879,9 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
 
     if (missing.length) {
       statusExplain("Quote failed", "err");
-      if (bookingSummary) {
-        bookingSummary.textContent = `Cannot request quote — missing: ${missing.join(", ")}\n\nShip To:\n${JSON.stringify(orderDetails, null, 2)}`;
-      }
+      setBookingSummary(
+        `Cannot request quote — missing: ${missing.join(", ")}\n\nShip To:\n${JSON.stringify(orderDetails, null, 2)}`
+      );
       armedForBooking = false;
       return;
     }
@@ -773,9 +889,9 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     const quoteRes = await ppCall({ method: "requestQuote", classVal: "quote", params: payload });
     if (!quoteRes || quoteRes.status !== 200) {
       statusExplain("Quote failed", "err");
-      if (bookingSummary) {
-        bookingSummary.textContent = `Quote error (HTTP ${quoteRes?.status}): ${quoteRes?.statusText}\n\n${JSON.stringify(quoteRes?.data, null, 2)}`;
-      }
+      setBookingSummary(
+        `Quote error (HTTP ${quoteRes?.status}): ${quoteRes?.statusText}\n\n${JSON.stringify(quoteRes?.data, null, 2)}`
+      );
       if (quoteBox) quoteBox.textContent = "No quote — check place code / proxy / token.";
       armedForBooking = false;
       return;
@@ -784,7 +900,7 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     const { quoteno, rates } = extractQuoteFromV28(quoteRes.data || {});
     if (!quoteno) {
       statusExplain("Quote failed", "err");
-      if (bookingSummary) bookingSummary.textContent = `No quote number.\n${JSON.stringify(quoteRes.data, null, 2)}`;
+      setBookingSummary(`No quote number.\n${JSON.stringify(quoteRes.data, null, 2)}`);
       armedForBooking = false;
       return;
     }
@@ -792,6 +908,8 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     const pickedService = pickService(rates);
     const chosenRate = rates?.find((r) => r.service === pickedService) || rates?.[0] || null;
     const quoteCost = chosenRate ? Number(chosenRate.total ?? chosenRate.subtotal ?? chosenRate.charge ?? 0) : null;
+
+    if (serviceDisplay) serviceDisplay.textContent = pickedService;
 
     if (quoteBox && rates?.length) {
       const fmt = (v) => (isNaN(Number(v)) ? "-" : `R${Number(v).toFixed(2)}`);
@@ -815,7 +933,9 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
 
     if (!collRes || collRes.status !== 200) {
       statusExplain("Booking failed", "err");
-      if (bookingSummary) bookingSummary.textContent = `Booking error: HTTP ${collRes?.status} ${collRes?.statusText}\n${JSON.stringify(collRes?.data, null, 2)}`;
+      setBookingSummary(
+        `Booking error: HTTP ${collRes?.status} ${collRes?.statusText}\n${JSON.stringify(collRes?.data, null, 2)}`
+      );
       armedForBooking = false;
       return;
     }
@@ -879,8 +999,7 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     }
 
     if (statusChip) statusChip.textContent = "Booked";
-    if (bookingSummary) {
-      bookingSummary.textContent = `WAYBILL: ${waybillNo}
+    setBookingSummary(`WAYBILL: ${waybillNo}
 Service: ${pickedService}
 Parcels: ${expected}
 Estimated Cost: ${money(quoteCost)}
@@ -888,8 +1007,7 @@ Estimated Cost: ${money(quoteCost)}
 ${usedPdf ? "Label + waybill generated by ParcelPerfect (PDF)." : "Using local HTML label layout."}
 
 Raw:
-${JSON.stringify(cr, null, 2)}`;
-    }
+${JSON.stringify(cr, null, 2)}`);
 
     await fulfillOnShopify(orderDetails, waybillNo);
 
@@ -911,6 +1029,8 @@ function resetSession() {
   renderSessionUI();
   renderCountdown();
   updateBookNowButton();
+  updateAutoModeUI();
+  updateServiceDisplay();
 }
 
 
@@ -1080,6 +1200,37 @@ async function handleScan(code) {
     }
   }
 
+  function normalizeTags(tags) {
+    if (!tags) return [];
+    if (Array.isArray(tags)) return tags.map((t) => String(t).toLowerCase());
+    return String(tags)
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter(Boolean);
+  }
+
+  function getLaneForOrder(order) {
+    const tags = normalizeTags(order?.tags);
+    const shippingLines = (order?.shipping_lines || []).map((l) => String(l || "").toLowerCase());
+    const title = String(order?.name || "").toLowerCase();
+
+    const isB2B = tags.some((t) => ["b2b", "wholesale", "trade"].includes(t));
+    if (isB2B) return "b2b";
+
+    const isPickup = tags.some((t) => ["local_pickup", "pickup", "collection"].includes(t)) ||
+      shippingLines.some((l) => l.includes("pickup") || l.includes("collect"));
+    if (isPickup) return "pickup";
+
+    const isDelivery = tags.some((t) => ["local_delivery", "delivery"].includes(t)) ||
+      shippingLines.some((l) => l.includes("local delivery") || l.includes("delivery"));
+    if (isDelivery) return "delivery";
+
+    if (title.includes("pickup")) return "pickup";
+    if (title.includes("delivery")) return "delivery";
+
+    return "online";
+  }
+
   function renderDispatchBoard(orders) {
     if (!dispatchBoard) return;
 
@@ -1103,11 +1254,20 @@ async function handleScan(code) {
       return;
     }
 
-    const cols = [{ id: "lane1", label: "" }, { id: "lane2", label: "" }, { id: "lane3", label: "" }, { id: "lane4", label: "" }];
-    const lanes = cols.map(() => []);
-    list.forEach((o, idx) => lanes[idx % lanes.length].push(o));
+    const cols = [
+      { id: "b2b", label: "B2B Shipping", className: "lane--b2b" },
+      { id: "delivery", label: "Local Delivery", className: "lane--delivery" },
+      { id: "pickup", label: "Local Pickup", className: "lane--pickup" },
+      { id: "online", label: "Online Orders", className: "lane--online" }
+    ];
+    const lanes = { b2b: [], delivery: [], pickup: [], online: [] };
+    list.forEach((o) => {
+      const lane = getLaneForOrder(o);
+      lanes[lane]?.push(o);
+    });
 
     const cardHTML = (o) => {
+      const entry = getDispatchEntry(o);
       const title = o.customer_name || o.name || `Order ${o.id}`;
       const city = o.shipping_city || "";
       const postal = o.shipping_postal || "";
@@ -1116,22 +1276,51 @@ async function handleScan(code) {
       const addr1 = o.shipping_address1 || "";
       const addr2 = o.shipping_address2 || "";
       const addrHtml = `${addr1}${addr2 ? "<br>" + addr2 : ""}<br>${city} ${postal}`;
+      const statusLabel =
+        entry.status === "packing"
+          ? "Packing"
+          : entry.status === "ready"
+          ? "Ready"
+          : entry.status === "done"
+          ? "Completed"
+          : "Not started";
+      const statusClass =
+        entry.status === "packing"
+          ? "status--packing"
+          : entry.status === "ready"
+          ? "status--ready"
+          : entry.status === "done"
+          ? "status--done"
+          : "";
 
       return `
-        <div class="dispatchCard">
-          <div class="dispatchCardTitle"><span>${title}</span></div>
+        <div class="dispatchCard" data-order-id="${getDispatchKey(o)}">
+          <div class="dispatchCardTitle"><span>${title}</span><span class="dispatchBadge ${statusClass}">${statusLabel}</span></div>
           <div class="dispatchCardMeta">#${(o.name || "").replace("#", "")} · ${city} · ${created}</div>
           <div class="dispatchCardAddress">${addrHtml}</div>
           <div class="dispatchCardLines">${lines}</div>
+          <div class="dispatchCardActions">
+            <label class="panelSub">Status</label>
+            <select class="dispatchSelect" data-field="status">
+              <option value="not_started" ${entry.status === "not_started" ? "selected" : ""}>Not started</option>
+              <option value="packing" ${entry.status === "packing" ? "selected" : ""}>Packing</option>
+              <option value="ready" ${entry.status === "ready" ? "selected" : ""}>Ready</option>
+              <option value="done" ${entry.status === "done" ? "selected" : ""}>Completed</option>
+            </select>
+            <label class="panelSub">Boxes / cartons</label>
+            <input class="dispatchInput" data-field="boxes" placeholder="e.g. Box A, Box B" value="${entry.boxes || ""}" />
+            <label class="panelSub">Packing notes</label>
+            <textarea class="dispatchTextarea" data-field="notes" placeholder="Special instructions, missing items, etc.">${entry.notes || ""}</textarea>
+          </div>
         </div>`;
     };
 
     dispatchBoard.innerHTML = cols
       .map((col, idx) => {
-        const cards = lanes[idx].map(cardHTML).join("") || `<div class="dispatchBoardEmptyCol">No jobs.</div>`;
+        const cards = lanes[col.id].map(cardHTML).join("") || `<div class="dispatchBoardEmptyCol">No jobs.</div>`;
         return `
-          <div class="dispatchCol">
-            <div class="dispatchColHeader">${col.label}</div>
+          <div class="dispatchCol ${col.className}">
+            <div class="dispatchColHeader">${col.label}<span class="laneCount">${lanes[col.id].length}</span></div>
             <div class="dispatchColBody">${cards}</div>
           </div>`;
       })
@@ -1183,6 +1372,83 @@ async function handleScan(code) {
     }
   });
 
+  modeToggleBtn?.addEventListener("click", () => {
+    autoBookEnabled = !autoBookEnabled;
+    if (!autoBookEnabled) cancelAutoBookTimer();
+    updateAutoModeUI();
+    statusExplain(autoBookEnabled ? "Auto-book enabled." : "Manual mode enabled.", "info");
+  });
+
+  focusScannerBtn?.addEventListener("click", () => {
+    scanInput?.focus();
+  });
+
+  toggleAddressBtn?.addEventListener("click", () => {
+    if (!addrResults) return;
+    const show = addrResults.closest("#addrBox")?.hasAttribute("hidden");
+    const box = addrResults.closest("#addrBox");
+    if (!box) return;
+    if (show) {
+      box.removeAttribute("hidden");
+      addrSearch?.focus();
+    } else {
+      box.setAttribute("hidden", "");
+    }
+  });
+
+  toggleServiceBtn?.addEventListener("click", () => {
+    const box = serviceSelect?.closest("#svcBox");
+    if (!box) return;
+    if (box.hasAttribute("hidden")) {
+      box.removeAttribute("hidden");
+      serviceSelect?.focus();
+    } else {
+      box.setAttribute("hidden", "");
+    }
+  });
+
+  copyShipToBtn?.addEventListener("click", async () => {
+    if (!shipToCard) return;
+    const text = shipToCard.textContent?.trim();
+    if (!text) {
+      statusExplain("No ship-to data to copy.", "warn");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      statusExplain("Ship-to copied to clipboard.", "ok");
+    } catch {
+      statusExplain("Clipboard blocked. Select text manually.", "warn");
+    }
+  });
+
+  const persistDispatchField = (target) => {
+    const card = target.closest(".dispatchCard");
+    if (!card) return;
+    const orderId = card.dataset.orderId;
+    if (!orderId) return;
+    const field = target.dataset.field;
+    if (!field) return;
+    if (!dispatchNotes[orderId]) dispatchNotes[orderId] = { status: "not_started", boxes: "", notes: "" };
+    dispatchNotes[orderId][field] = target.value;
+    if (field === "status") updateDispatchBadge(card, target.value);
+    saveDispatchNotes();
+  };
+
+  dispatchBoard?.addEventListener("input", (e) => {
+    const target = e.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      if (target.dataset.field) persistDispatchField(target);
+    }
+  });
+
+  dispatchBoard?.addEventListener("change", (e) => {
+    const target = e.target;
+    if (target instanceof HTMLSelectElement) {
+      if (target.dataset.field) persistDispatchField(target);
+    }
+  });
+
 btnBookNow?.addEventListener("click", async () => {
   cancelAutoBookTimer();
 
@@ -1214,7 +1480,7 @@ btnBookNow?.addEventListener("click", async () => {
     if (stickerPreview) stickerPreview.innerHTML = "";
     if (printMount) printMount.innerHTML = "";
     if (quoteBox) quoteBox.textContent = "No quote yet.";
-    if (bookingSummary) bookingSummary.textContent = "";
+    setBookingSummary("");
     if (scanInput) scanInput.value = "";
     if (dbgOn && debugLog) debugLog.textContent = "";
     switchMainView("scan");
@@ -1224,8 +1490,12 @@ btnBookNow?.addEventListener("click", async () => {
   navOps?.addEventListener("click", () => switchMainView("ops"));
 
   loadBookedOrders();
+  loadDispatchNotes();
   renderSessionUI();
   renderCountdown();
+  updateAutoModeUI();
+  updateServiceDisplay();
+  startCountdownTicker();
   initAddressSearch();
   refreshDispatchData();
   setInterval(refreshDispatchData, 30000);
