@@ -3,7 +3,6 @@
 
   const CONFIG = {
     COST_ALERT_THRESHOLD: 250.0,
-     BOOKING_IDLE_MS: 6000,
     BOX_DIM: { dim1: 40, dim2: 40, dim3: 30, massKg: 5 },
     ORIGIN: {
       origpers: "Flippen Lekka Holdings (Pty) Ltd",
@@ -21,6 +20,7 @@
       origperemail: "admin@flippenlekkaspices.co.za",
       notes: "Louis 0730451885 / Michael 0783556277"
     },
+    TRACKING_COMPANY: "SWE / ParcelPerfect",
     PP_ENDPOINT: "/pp",
     SHOPIFY: { PROXY_BASE: "/shopify" }
   };
@@ -110,13 +110,19 @@
     actionFlash._fadeTimer = setTimeout(() => {
       actionFlash.style.opacity = "0.4";
     }, 2000);
+  const STORAGE_KEYS = {
+    plans: "fl_pack_plans_v2",
+    recent: "fl_recent_fulfilled_v2"
   };
 
-  const appendDebug = (msg) => {
-    if (!dbgOn || !debugLog) return;
-    debugLog.textContent += `\n${new Date().toLocaleTimeString()} ${msg}`;
-    debugLog.scrollTop = debugLog.scrollHeight;
-  };
+  const STEPS = [
+    { key: "packed", label: "Packed" },
+    { key: "booked", label: "Booked" },
+    { key: "printed", label: "Printed" },
+    { key: "fulfilled", label: "Fulfilled" },
+    { key: "notified", label: "Notified" },
+    { key: "archived", label: "Archived" }
+  ];
 
   function updateCountdownDisplay() {
     if (!uiCountdown) return;
@@ -174,15 +180,25 @@
 function isAutoBookOrder(details) {
   return hasParcelCountTag(details);
 }
+  const openOrdersEl = document.getElementById("openOrders");
+  const refreshBtn = document.getElementById("refreshBtn");
+  const clearStorageBtn = document.getElementById("clearStorageBtn");
+  const recentTable = document.getElementById("recentFulfilledTable");
+  const recentBody = document.getElementById("recentFulfilledBody");
+  const recentEmpty = document.getElementById("recentFulfilledEmpty");
 
-  function loadBookedOrders() {
+  let orders = [];
+  let packPlans = {};
+  let recentFulfilled = [];
+
+  const loadStorage = () => {
     try {
-      const raw = localStorage.getItem("fl_booked_orders_v1");
-      if (raw) bookedOrders = new Set(JSON.parse(raw));
-    } catch {}
-  }
+      const rawPlans = localStorage.getItem(STORAGE_KEYS.plans);
+      packPlans = rawPlans ? JSON.parse(rawPlans) : {};
+    } catch {
+      packPlans = {};
+    }
 
-  function saveBookedOrders() {
     try {
       localStorage.setItem("fl_booked_orders_v1", JSON.stringify([...bookedOrders]));
     } catch {}
@@ -297,7 +313,12 @@ function isAutoBookOrder(details) {
         if (pattern[i] === "1") rects.push(`<rect x="${x}" y="0" width="${moduleWidth}" height="${height}" />`);
         x += moduleWidth;
       }
+      const rawRecent = localStorage.getItem(STORAGE_KEYS.recent);
+      recentFulfilled = rawRecent ? JSON.parse(rawRecent) : [];
+    } catch {
+      recentFulfilled = [];
     }
+  };
 
     return `
 <svg xmlns="http://www.w3.org/2000/svg"
@@ -382,47 +403,128 @@ function scheduleIdleAutoBook() {
       province: "Western Cape",
       postal: "7530",
       placeCode: 4001
-    }
-  ];
+  const savePlans = () => {
+    localStorage.setItem(STORAGE_KEYS.plans, JSON.stringify(packPlans));
+  };
 
-  async function loadAddressBook() {
-    try {
-      const cached = localStorage.getItem("fl_addr_book_v2");
-      if (cached) {
-        const arr = JSON.parse(cached);
-        if (Array.isArray(arr) && arr.length) {
-          addressBook = arr;
-          return;
-        }
+  const saveRecent = () => {
+    localStorage.setItem(STORAGE_KEYS.recent, JSON.stringify(recentFulfilled));
+  };
+
+  const formatDate = (value) => {
+    if (!value) return "-";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "-";
+    return date.toLocaleString();
+  };
+
+  const formatShipTo = (order) => {
+    const parts = [order.shipping_address1, order.shipping_address2, order.shipping_city, order.shipping_postal]
+      .map((p) => String(p || "").trim())
+      .filter(Boolean);
+    return parts.join(", ") || "-";
+  };
+
+  const getPlan = (order) => {
+    const key = String(order.id);
+    if (!packPlans[key]) {
+      packPlans[key] = {
+        orderId: order.id,
+        orderName: order.name,
+        orderGid: order.order_gid,
+        boxes: [],
+        milestones: {},
+        log: [],
+        expanded: false,
+        bookingData: null,
+        fulfillmentIds: []
+      };
+    }
+    return packPlans[key];
+  };
+
+  const logPlan = (plan, status, message) => {
+    plan.log = plan.log || [];
+    plan.log.unshift({ status, message, at: new Date().toISOString() });
+    plan.log = plan.log.slice(0, 50);
+  };
+
+  const setMilestone = (plan, key, status, message) => {
+    const existing = plan.milestones[key];
+    if (existing?.status === status && existing?.message === message) return;
+
+    plan.milestones[key] = {
+      status,
+      message,
+      at: new Date().toISOString()
+    };
+    logPlan(plan, status === "ok" ? "ok" : status === "err" ? "err" : "info", `${key}: ${message}`);
+    savePlans();
+  };
+
+  const normalizeLineItems = (order) =>
+    (order.line_items || []).map((li) => ({
+      id: li.gid || li.id,
+      title: li.title,
+      quantity: Number(li.quantity || 0),
+      fulfillable_quantity: Number(li.fulfillable_quantity ?? li.quantity ?? 0)
+    }));
+
+  const getAllocatedQty = (plan, lineItemId) =>
+    plan.boxes.reduce((sum, box) => sum + Number(box.items?.[lineItemId] || 0), 0);
+
+  const getRemainingQty = (order, plan, lineItem) => {
+    const max = Number(lineItem.fulfillable_quantity || 0);
+    const allocated = getAllocatedQty(plan, lineItem.id);
+    return Math.max(0, max - allocated);
+  };
+
+  const getRemainingTotals = (order, plan) => {
+    const items = normalizeLineItems(order);
+    const remaining = items.reduce((sum, li) => sum + getRemainingQty(order, plan, li), 0);
+    return { remaining, total: items.reduce((sum, li) => sum + li.fulfillable_quantity, 0) };
+  };
+
+  const updatePlanState = (order, plan) => {
+    const items = normalizeLineItems(order);
+    const remaining = items.map((li) => getRemainingQty(order, plan, li));
+    const anyAllocated = plan.boxes.some((box) => Object.values(box.items || {}).some((qty) => qty > 0));
+    const packed = remaining.every((qty) => qty === 0) && items.length > 0;
+
+    if (packed) {
+      if (plan.milestones.packed?.status !== "ok") {
+        setMilestone(plan, "packed", "ok", "All items allocated to boxes.");
       }
-    } catch {}
-
-    try {
-      const res = await fetch("/addresses.json", { cache: "no-cache" });
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      if (!Array.isArray(data)) throw new Error("addresses.json must be an array");
-      addressBook = data;
-      localStorage.setItem("fl_addr_book_v2", JSON.stringify(addressBook));
-    } catch {
-      addressBook = ADDR_FALLBACK;
-      try {
-        localStorage.setItem("fl_addr_book_v2", JSON.stringify(addressBook));
-      } catch {}
+    } else if (anyAllocated) {
+      setMilestone(plan, "packed", "pending", "Packing in progress.");
+    } else {
+      setMilestone(plan, "packed", "pending", "No items allocated yet.");
     }
-  }
 
-  function renderAddrResults(q) {
-    if (!addrResults) return;
-    const query = (q || "").trim().toLowerCase();
-    const rows = addressBook
-      .filter((e) => {
-        const hay = `${e.label || ""} ${e.name || ""} ${e.address1 || ""} ${e.address2 || ""} ${e.city || ""} ${e.postal || ""}`.toLowerCase();
-        return !query || hay.includes(query);
-      })
-      .slice(0, 100)
-      .map((e, idx) =>
-        `<div class="addrItem" data-idx="${idx}" role="option" tabindex="0"><strong>${e.label || e.name || "Address"}</strong> — ${e.city || ""} ${e.postal || ""}<br><span class="addrHint" style="color:#cbd5e1">${e.address1}${e.address2 ? ", " + e.address2 : ""}</span>${e.placeCode ? ` <span class='addrHint'>(code:${e.placeCode})</span>` : ""}</div>`
+    savePlans();
+  };
+
+  const renderRecent = () => {
+    if (!recentTable || !recentBody || !recentEmpty) return;
+    if (!recentFulfilled.length) {
+      recentTable.hidden = true;
+      recentEmpty.hidden = false;
+      return;
+    }
+
+    recentTable.hidden = false;
+    recentEmpty.hidden = true;
+    recentBody.innerHTML = recentFulfilled
+      .map(
+        (item) => `
+        <tr>
+          <td>${formatDate(item.date)}</td>
+          <td>${item.orderName}</td>
+          <td>${item.waybill}</td>
+          <td>${item.customer}</td>
+          <td>${item.shipTo}</td>
+        </tr>
+      `
       )
       .join("");
     addrResults.innerHTML =
@@ -512,26 +614,18 @@ function scheduleIdleAutoBook() {
         ? `Parcels: ${idxs.join(", ")}${tagInfo}${manualInfo}`
         : "No parcels (scan parcel labels).";
     }
+  };
 
-    if (shipToCard) {
-      shipToCard.textContent = !orderDetails
-        ? "None yet."
-        : `${orderDetails.name}
-${orderDetails.address1}
-${orderDetails.address2 ? orderDetails.address2 + "\n" : ""}${orderDetails.city}
-${orderDetails.province} ${orderDetails.postal}
-Tel: ${orderDetails.phone || ""}
-Email: ${orderDetails.email || ""}`.trim();
-    }
+  const render = () => {
+    if (!openOrdersEl) return;
+    const cards = orders
+      .filter((order) => packPlans[String(order.id)]?.milestones?.archived?.status !== "ok")
+      .map((order) => renderOrderCard(order))
+      .join("");
 
-    if (expected && parcelsForOrder.size) {
-      statusExplain(
-        `Scanning ${parcelsForOrder.size}/${expected} parcels`,
-        parcelsForOrder.size === expected ? "ok" : "info"
-      );
-    } else if (activeOrderNo) {
-      statusExplain(hasParcelCountTag(orderDetails) ? "Scan parcels until complete." : "Scan parcels, then BOOK NOW.", "info");
-    }
+    openOrdersEl.innerHTML = cards || `<div class="emptyState">No open orders available.</div>`;
+    renderRecent();
+  };
 
     updateAutoModeUI();
     updateServiceDisplay();
@@ -570,197 +664,275 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     const toHTML = `${destDetails.name}<br>${destDetails.address1}${
       destDetails.address2 ? `<br>${destDetails.address2}` : ""
     }<br>${destDetails.city}, ${destDetails.province} ${destDetails.postal}<br>Tel: ${destDetails.phone || ""}`;
+  const renderOrderCard = (order) => {
+    const plan = getPlan(order);
+    updatePlanState(order, plan);
+
+    const items = normalizeLineItems(order);
+    const { remaining, total } = getRemainingTotals(order, plan);
+    const packed = remaining === 0 && total > 0;
+
+    const statusChip = packed
+      ? `<span class="chip ok">Packed/Ready to book</span>`
+      : remaining < total
+      ? `<span class="chip warn">In progress</span>`
+      : `<span class="chip">Open</span>`;
+
+    const fulfillChip = order.fulfillment_status
+      ? `<span class="chip">Fulfillment: ${order.fulfillment_status}</span>`
+      : "";
+
+    const progress = STEPS.map((step) => {
+      const status = plan.milestones[step.key]?.status;
+      const cls = status === "ok" ? "done" : status === "pending" ? "active" : "";
+      return `<span class="progressStep ${cls}">${step.label}</span>`;
+    }).join("");
+
+    const milestones = STEPS.map((step) => {
+      const data = plan.milestones[step.key] || {};
+      const status = data.status || "pending";
+      const icon = status === "ok" ? "ok" : status === "err" ? "err" : "";
+      return `
+        <div class="milestone">
+          <span>${step.label}</span>
+          <span class="state ${icon}">${status === "ok" ? "✔" : status === "err" ? "✖" : "…"}</span>
+        </div>
+      `;
+    }).join("");
+
+    const logItems = (plan.log || [])
+      .slice(0, 6)
+      .map(
+        (entry) => `
+        <div class="logEntry ${entry.status}">
+          <div>${entry.message}</div>
+        </div>
+      `
+      )
+      .join("") || `<div class="logEntry info">No milestones yet.</div>`;
+
+    const boxesHtml = plan.expanded
+      ? plan.boxes
+          .map((box, idx) => renderBoxEditor(order, plan, box, idx))
+          .join("")
+      : "";
+
+    const remainingRows = items
+      .map(
+        (li) => `
+        <div class="lineItem">
+          <span>${li.title}</span>
+          <span>${getRemainingQty(order, plan, li)} / ${li.fulfillable_quantity}</span>
+        </div>
+      `
+      )
+      .join("");
+
+    const bookingDisabled = !packed || plan.milestones.booked?.status === "ok" || plan.milestones.booked?.status === "pending";
+
+    const retryPrint = plan.milestones.printed?.status === "err";
+    const retryFulfill = plan.milestones.fulfilled?.status === "err";
+    const retryNotify = plan.milestones.notified?.status === "err";
 
     return `
-    <div class="wb100x150" aria-label="Waybill ${waybillNo}, parcel ${parcelIdx} of ${parcelCount}">
-      <div class="wbHead">
-        <div class="wbMetaRow"><img src="img/download.jpg" style="width:80px; height:80px"></div>
-        <div class="wbTopCode" aria-label="Parcel barcode top">
-          <div class="wbTopHuman">${codeParcel}</div>
-          ${svgBig}
+      <article class="orderCard" data-order-id="${order.id}">
+        <div class="cardHeader">
+          <div>
+            <h3>${order.name}</h3>
+            <div class="muted">${formatDate(order.created_at)} • ${order.customer_name || "Unknown"}</div>
+            <div class="muted">${formatShipTo(order)}</div>
+          </div>
+          <div class="chipRow">
+            ${statusChip}
+            ${fulfillChip}
+          </div>
         </div>
-      </div>
 
-      <div class="wbBody">
-        <div class="wbFrom"><strong>FROM</strong><br>${fromHTML}</div>
-        <div class="wbTo"><strong>SHIP&nbsp;TO</strong><br>${toHTML}</div>
-      </div>
-
-      <div class="wbFoot">
-        <div class="wbTopCode" aria-label="Parcel barcode top">
-          <div class="wbTopHuman">${codeParcel}</div>
-          ${svgTopParcel}
+        <div class="lineItems">
+          ${items
+            .map((li) => `<div class="lineItem"><span>${li.title}</span><span>× ${li.quantity}</span></div>`)
+            .join("")}
         </div>
-        <div class="podBox">
-          <div class="podTitle">Proof of Delivery (POD) &nbsp; | &nbsp; Waybill: <strong>${waybillNo}</strong> </div>
-          <div style="border-top:1px dotted #000"></div>
-          <div>Receiver name:</div>
-          <div style="border-top:1px dotted #000"></div>
-          <div>Signature:</div>
-          <div style="border-top:1px dotted #000"></div>
-          <div>Date: ____/___/2025 &nbsp; | &nbsp; Time: ____:____</div>
+
+        <div class="progress">${progress}</div>
+
+        <div class="cardActions">
+          <button class="ghost" data-action="toggle" data-order-id="${order.id}">
+            ${plan.expanded ? "Hide pack plan" : "Fulfill / Pack"}
+          </button>
+          <button class="ghost" data-action="add-box" data-order-id="${order.id}">Add box</button>
+          <button class="success" data-action="book" data-order-id="${order.id}" ${bookingDisabled ? "disabled" : ""}>
+            BOOK NOW
+          </button>
+          ${retryPrint ? `<button class="warn" data-action="retry-print" data-order-id="${order.id}">Retry Print</button>` : ""}
+          ${retryFulfill ? `<button class="warn" data-action="retry-fulfill" data-order-id="${order.id}">Retry Fulfill</button>` : ""}
+          ${retryNotify ? `<button class="warn" data-action="retry-notify" data-order-id="${order.id}">Retry Notify</button>` : ""}
         </div>
+
+        ${plan.expanded ? `
+          <div class="editor">
+            <h4>Packing editor</h4>
+            <div class="remainingList">${remainingRows}</div>
+            ${boxesHtml || `<div class="muted" style="margin-top:0.5rem;">No boxes created yet.</div>`}
+            <div class="muted" style="margin-top:0.5rem;">Remaining to allocate: ${remaining} / ${total}</div>
+          </div>
+        ` : ""}
+
+        <div class="milestones">${milestones}</div>
+        <div class="logList">${logItems}</div>
+      </article>
+    `;
+  };
+
+  const renderBoxEditor = (order, plan, box, idx) => {
+    const items = normalizeLineItems(order);
+    const rows = items
+      .map((li) => {
+        const allocated = Number(box.items?.[li.id] || 0);
+        const remaining = getRemainingQty(order, plan, li) + allocated;
+        const disableDec = allocated <= 0;
+        const disableInc = remaining <= 0;
+        return `
+          <div class="qtyRow">
+            <span>${li.title}</span>
+            <div class="qtyControls">
+              <button data-action="dec" data-order-id="${order.id}" data-box-index="${idx}" data-line-id="${li.id}" ${disableDec ? "disabled" : ""}>-</button>
+              <span>${allocated}</span>
+              <button data-action="inc" data-order-id="${order.id}" data-box-index="${idx}" data-line-id="${li.id}" ${disableInc ? "disabled" : ""}>+</button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    return `
+      <div class="boxCard">
+        <div class="boxHeader">
+          <strong>Box ${idx + 1}</strong>
+          <button class="ghost" data-action="remove-box" data-order-id="${order.id}" data-box-index="${idx}">Remove</button>
+        </div>
+        ${rows}
       </div>
-    </div>`;
-  }
+    `;
+  };
 
-  function mountLabelToPreviewAndPrint(firstHtml, allHtml) {
-    if (stickerPreview) stickerPreview.innerHTML = `<div class="wbPreviewZoom">${firstHtml}</div>`;
-    if (printMount) printMount.innerHTML = allHtml;
-  }
+  const fetchOpenOrders = async () => {
+    const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/orders/open`);
+    if (!res.ok) throw new Error(`Open orders fetch failed: ${res.status}`);
+    const data = await res.json();
+    orders = data.orders || [];
+  };
 
-  async function waitForImages(container) {
-    const imgs = [...container.querySelectorAll("img")];
-    await Promise.all(
-      imgs.map((img) =>
-        img.complete && img.naturalWidth
-          ? Promise.resolve()
-          : new Promise((res) => {
-              img.onload = img.onerror = () => res();
-            })
-      )
-    );
-  }
+  const updateAllocation = (orderId, boxIndex, lineId, delta) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    const line = normalizeLineItems(order).find((li) => String(li.id) === String(lineId));
+    if (!line) return;
 
-  async function inlineImages(container) {
-    const imgs = [...container.querySelectorAll("img")].filter((img) => img.src && !img.src.startsWith("data:"));
-    for (const img of imgs) {
-      try {
-        const resp = await fetch(img.src, { cache: "force-cache" });
-        const blob = await resp.blob();
-        const dataURL = await new Promise((r) => {
-          const fr = new FileReader();
-          fr.onload = () => r(fr.result);
-          fr.readAsDataURL(blob);
-        });
-        img.setAttribute("src", dataURL);
-      } catch (e) {
-        appendDebug("Inline image failed: " + img.src + " " + e);
-      }
-    }
-  }
+    const current = Number(plan.boxes[boxIndex]?.items?.[line.id] || 0);
+    const remaining = getRemainingQty(order, plan, line) + current;
+    const next = Math.max(0, Math.min(current + delta, remaining));
 
-  async function ppCall(payload) {
+    if (!plan.boxes[boxIndex].items) plan.boxes[boxIndex].items = {};
+    plan.boxes[boxIndex].items[line.id] = next;
+
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const addBox = (orderId) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.boxes.push({ boxIndex: plan.boxes.length + 1, items: {} });
+    plan.expanded = true;
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const removeBox = (orderId, boxIndex) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.boxes.splice(boxIndex, 1);
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const toggleExpand = (orderId) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.expanded = !plan.expanded;
+    savePlans();
+    render();
+  };
+
+  const ppCall = async (payload) => {
+    const res = await fetch(CONFIG.PP_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const text = await res.text();
+    let data;
     try {
-      appendDebug(`PP CALL → method:${payload.method}, classVal:${payload.classVal}`);
-      const res = await fetch(CONFIG.PP_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      const text = await res.text();
-      let data;
-      try { data = JSON.parse(text); } catch { data = { raw: text }; }
-      appendDebug(`PP RESP ← HTTP ${res.status} ${res.statusText} :: ${text.slice(0, 500)}`);
-      return { status: res.status, statusText: res.statusText, data };
-    } catch (err) {
-      appendDebug("PP NETWORK ERROR: " + String(err?.message || err));
-      return { status: 0, statusText: String(err?.message || err), data: { error: "NETWORK", detail: String(err) } };
-    }
-  }
-
-  function resolvePlaceCode(dest) {
-    const key = `${(dest.city || "").trim().toLowerCase()}|${(dest.postal || "").trim()}`;
-    const table = {
-      "cape town|7530": 4001,
-      "bellville|7530": 4001,
-      "durbanville|7550": 4020,
-      "cape town|8001": 3001
-    };
-    return table[key] || null;
-  }
-
-  async function lookupPlaceCodeFromPP(destDetails) {
-    const suburb = (destDetails.suburb || destDetails.address2 || "").trim();
-    const town = (destDetails.city || "").trim();
-
-    const queries = [];
-    if (suburb) queries.push(suburb);
-    if (town && town.toLowerCase() !== suburb.toLowerCase()) {
-      queries.push(town);
-      if (suburb) queries.push(`${suburb} ${town}`);
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
     }
 
-    if (!queries.length) return null;
+    return { status: res.status, statusText: res.statusText, data };
+  };
 
-    for (const q of queries) {
-      try {
-        appendDebug("PP getPlace query: " + q);
-        const res = await fetch(`/pp/place?q=${encodeURIComponent(q)}`);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const data = await res.json();
+  const extractQuoteFromV28 = (shape) => {
+    const obj = shape || {};
+    if (obj.quoteno) return { quoteno: obj.quoteno, rates: obj.rates || [] };
+    const res = Array.isArray(obj.results) && obj.results[0] ? obj.results[0] : null;
+    const quoteno = (res && res.quoteno) || null;
+    const rates = res && Array.isArray(res.rates) ? res.rates : [];
+    return { quoteno, rates };
+  };
 
-        if (data.errorcode && Number(data.errorcode) !== 0) continue;
+  const resolvePlaceCode = async (order) => {
+    const city = String(order.shipping_city || "").trim();
+    const suburb = String(order.shipping_address2 || "").trim();
+    const search = [suburb, city].filter(Boolean).join(" ");
+    if (!search) return null;
 
-        const list = Array.isArray(data.results) ? data.results : [];
-        if (!list.length) continue;
+    const res = await fetch(`/pp/place?q=${encodeURIComponent(search)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data.results) ? data.results : [];
+    if (!list.length) return null;
+    const best = list.find((p) => String(p.ring) === "0") || list[0];
+    if (!best || best.place == null) return null;
+    return Number(best.place) || best.place;
+  };
 
-        const targetTown = town.toLowerCase();
-        const targetSuburb = suburb.toLowerCase();
-
-        let best =
-          (targetSuburb &&
-            list.find((p) => {
-              const name = (p.name || "").toLowerCase();
-              const t = (p.town || "").toLowerCase();
-              return ((name.includes(targetSuburb) || t.includes(targetSuburb)) && String(p.ring) === "0");
-            })) ||
-          (targetSuburb &&
-            list.find((p) => {
-              const name = (p.name || "").toLowerCase();
-              const t = (p.town || "").toLowerCase();
-              return name.includes(targetSuburb) || t.includes(targetSuburb);
-            })) ||
-          (targetTown &&
-            list.find((p) => (p.town || "").trim().toLowerCase() === targetTown && String(p.ring) === "0")) ||
-          (targetTown && list.find((p) => (p.town || "").trim().toLowerCase() === targetTown)) ||
-          list.find((p) => String(p.ring) === "0") ||
-          list[0];
-
-        if (!best || best.place == null) continue;
-
-        const code = Number(best.place);
-        const label = (best.name || "").trim() + (best.town ? " – " + String(best.town).trim() : "");
-        return { code, label, raw: best };
-      } catch (e) {
-        appendDebug("PP getPlace failed: " + String(e));
-      }
-    }
-    return null;
-  }
-
-  function buildParcelPerfectPayload(destDetails, parcelCount) {
-    const d = CONFIG.ORIGIN;
-
-    let destplace =
-      placeCodeOverride != null
-        ? placeCodeOverride
-        : destDetails && destDetails.placeCode != null
-        ? Number(destDetails.placeCode) || destDetails.placeCode
-        : resolvePlaceCode(destDetails) || null;
-
-    let perParcelMass = CONFIG.BOX_DIM.massKg;
-    if (destDetails && typeof destDetails.totalWeightKg === "number" && destDetails.totalWeightKg > 0 && parcelCount > 0) {
-      perParcelMass = Number((destDetails.totalWeightKg / parcelCount).toFixed(2));
-      if (perParcelMass <= 0) perParcelMass = CONFIG.BOX_DIM.massKg;
-    }
-
+  const buildParcelPerfectPayload = async (order, parcelCount) => {
+    const destplace = await resolvePlaceCode(order);
     const details = {
-      ...d,
-      destpers: destDetails.name,
-      destperadd1: destDetails.address1,
-      destperadd2: destDetails.address2 || "",
-      destperadd3: destDetails.city,
-      destperadd4: destDetails.province,
-      destperpcode: destDetails.postal,
-      desttown: destDetails.city,
+      ...CONFIG.ORIGIN,
+      destpers: order.shipping_name || order.customer_name,
+      destperadd1: order.shipping_address1,
+      destperadd2: order.shipping_address2 || "",
+      destperadd3: order.shipping_city,
+      destperadd4: order.shipping_province,
+      destperpcode: order.shipping_postal,
+      desttown: order.shipping_city,
       destplace,
-      destpercontact: destDetails.name,
-      destperphone: destDetails.phone,
+      destpercontact: order.shipping_name || order.customer_name,
+      destperphone: order.shipping_phone || "",
       notifydestpers: 1,
-      destpercell: destDetails.phone || "0000000000",
-      destperemail: destDetails.email,
-      reference: `Order ${activeOrderNo}`
+      destpercell: order.shipping_phone || "",
+      destperemail: order.email || "",
+      reference: `Order ${order.name}`
     };
 
     const contents = Array.from({ length: parcelCount }, (_, i) => ({
@@ -769,113 +941,15 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
       dim1: CONFIG.BOX_DIM.dim1,
       dim2: CONFIG.BOX_DIM.dim2,
       dim3: CONFIG.BOX_DIM.dim3,
-      actmass: perParcelMass
+      actmass: CONFIG.BOX_DIM.massKg
     }));
 
     return { details, contents };
-  }
+  };
 
-  async function fulfillOnShopify(details, waybillNo) {
-    try {
-      if (!details?.raw?.id) return;
-
-      const orderId = details.raw.id;
-      const lineItems = (details.raw.line_items || []).map((li) => ({ id: li.id, quantity: li.quantity }));
-
-      const resp = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/fulfill`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          orderId,
-          lineItems,
-          trackingNumber: waybillNo,
-          trackingUrl: "",
-          trackingCompany: "SWE / ParcelPerfect"
-        })
-      });
-
-      const text = await resp.text();
-      appendDebug("Shopify fulfill => " + resp.status + " " + text.slice(0, 300));
-    } catch (e) {
-      appendDebug("Shopify fulfill exception: " + String(e));
-    }
-  }
-
-  function promptManualParcelCount(orderNo) {
-    const raw = window.prompt(`Enter parcel count for order ${orderNo} (required):`, "");
-    if (!raw) return null;
-    const n = parseInt(String(raw).trim(), 10);
-    if (!Number.isFinite(n) || n <= 0 || n > 999) return null;
-    return n;
-  }
-
-  function extractQuoteFromV28(shape) {
-    const obj = shape || {};
-    if (obj.quoteno) return { quoteno: obj.quoteno, rates: obj.rates || [] };
-    const res = Array.isArray(obj.results) && obj.results[0] ? obj.results[0] : null;
-    const quoteno = (res && res.quoteno) || null;
-    const rates = res && Array.isArray(res.rates) ? res.rates : [];
-    return { quoteno, rates };
-  }
-
-  function pickService(rates) {
-    const wanted = serviceOverride === "AUTO" ? ["RFX", "ECO", "RDF"] : [serviceOverride];
-    const svcList = (rates || []).map((r) => r.service);
-    for (const w of wanted) if (svcList.includes(w)) return w;
-    return svcList[0] || "RDF";
-  }
-
-  async function doBookingNow(opts = {}) {
-    if (!activeOrderNo || !orderDetails || armedForBooking) return;
-
-    if (isBooked(activeOrderNo)) {
-      statusExplain(`Order ${activeOrderNo} already booked — blocked.`, "warn");
-      return;
-    }
-
-    const manual = !!opts.manual;
-    const overrideCount = Number(opts.parcelCount || 0);
-
-    let expected = getExpectedParcelCount(orderDetails);
-
-    if (manual) {
-      if (!overrideCount || overrideCount < 1) {
-        statusExplain("Scan parcels first.", "warn");
-        return;
-      }
-      expected = overrideCount;
-      orderDetails.manualParcelCount = expected;
-      renderSessionUI();
-    } else {
-      if (!expected) {
-        const n = promptManualParcelCount(activeOrderNo);
-        if (!n) {
-          statusExplain("Parcel count required (cancelled).", "warn");
-          return;
-        }
-        orderDetails.manualParcelCount = n;
-        expected = n;
-        renderSessionUI();
-      }
-
-      if (parcelsForOrder.size !== expected) {
-        statusExplain(`Cannot book — scanned ${parcelsForOrder.size}/${expected}.`, "warn");
-        return;
-      }
-    }
-
-    const parcelIndexes = Array.from({ length: expected }, (_, i) => i + 1);
-
-    armedForBooking = true;
-    appendDebug("Booking order " + activeOrderNo + " parcels=" + parcelIndexes.join(", "));
-
-    const missing = [];
-    ["name", "address1", "city", "province", "postal"].forEach((k) => {
-      if (!orderDetails[k]) missing.push(k);
-    });
-
-    const payload = buildParcelPerfectPayload(orderDetails, expected);
-    if (!payload.details.destplace) missing.push("destplace (place code)");
+  const bookParcelPerfect = async (order, plan) => {
+    const parcelCount = plan.boxes.length;
+    if (!parcelCount) throw new Error("No boxes to book.");
 
     if (missing.length) {
       statusExplain("Quote failed", "err");
@@ -918,11 +992,25 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
         .join("\n");
       quoteBox.textContent = `Selected: ${pickedService} • Est: ${fmt(quoteCost)}${quoteCost > CONFIG.COST_ALERT_THRESHOLD ? "  ⚠ high" : ""}\nOptions:\n${lines}`;
     }
+    const payload = await buildParcelPerfectPayload(order, parcelCount);
+    if (!payload.details.destplace) {
+      throw new Error("Missing destination place code. Update address or place code.");
+    }
+
+    const quoteRes = await ppCall({ method: "requestQuote", classVal: "quote", params: payload });
+    if (quoteRes.status !== 200) {
+      throw new Error(`Quote failed: ${quoteRes.status} ${quoteRes.statusText}`);
+    }
+
+    const { quoteno, rates } = extractQuoteFromV28(quoteRes.data || {});
+    if (!quoteno) throw new Error("Quote missing quoteno.");
+
+    const pickedService = (rates || []).find((rate) => rate.service === "RDF")?.service || rates?.[0]?.service || "RDF";
 
     await ppCall({
       method: "updateService",
       classVal: "quote",
-      params: { quoteno, service: pickedService, reference: String(activeOrderNo) }
+      params: { quoteno, service: pickedService, reference: String(order.name) }
     });
 
     const collRes = await ppCall({
@@ -938,73 +1026,121 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
       );
       armedForBooking = false;
       return;
+    if (collRes.status !== 200) {
+      throw new Error(`Booking failed: ${collRes.status} ${collRes.statusText}`);
     }
 
     const cr = collRes.data || {};
     const maybe = cr.results?.[0] || cr;
-    const waybillNo = String(maybe.waybill || maybe.waybillno || maybe.waybillNo || maybe.trackingNo || "WB-TEST-12345");
-    appendDebug("Waybill = " + waybillNo);
+    const waybill = String(maybe.waybill || maybe.waybillno || maybe.waybillNo || maybe.trackingNo || "");
 
-    const labelsBase64 = maybe.labelsBase64 || maybe.labelBase64 || maybe.labels_pdf || null;
-    const waybillBase64 = maybe.waybillBase64 || maybe.waybillPdfBase64 || maybe.waybill_pdf || null;
+    return {
+      waybill,
+      service: pickedService,
+      labelsBase64: maybe.labelsBase64 || maybe.labelBase64 || maybe.labels_pdf || null,
+      waybillBase64: maybe.waybillBase64 || maybe.waybillPdfBase64 || maybe.waybill_pdf || null,
+      raw: cr
+    };
+  };
 
-    let usedPdf = false;
+  const printLabels = async (booking, orderName) => {
+    if (!booking?.labelsBase64) throw new Error("Labels not available to print.");
+    const labelsResp = await fetch("/printnode/print", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pdfBase64: booking.labelsBase64, title: `Labels ${orderName}` })
+    });
+    if (!labelsResp.ok) throw new Error(`PrintNode labels failed: ${labelsResp.status}`);
 
-    if (labelsBase64) {
-      usedPdf = true;
+    if (booking.waybillBase64) {
+      const wbResp = await fetch("/printnode/print", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pdfBase64: booking.waybillBase64, title: `Waybill ${orderName}` })
+      });
+      if (!wbResp.ok) throw new Error(`PrintNode waybill failed: ${wbResp.status}`);
+    }
+  };
 
-      try {
-        await fetch("/printnode/print", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ pdfBase64: labelsBase64, title: `Labels ${waybillNo}` })
-        });
-      } catch (e) {
-        appendDebug("PrintNode label error: " + String(e));
-      }
-
-      if (waybillBase64) {
-        try {
-          await fetch("/printnode/print", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ pdfBase64: waybillBase64, title: `Waybill ${waybillNo}` })
-          });
-        } catch (e) {
-          appendDebug("PrintNode waybill error: " + String(e));
+  const fetchFulfillmentMap = async (orderGid) => {
+    const query = `query FulfillmentOrders($orderId: ID!) {
+      order(id: $orderId) {
+        fulfillmentOrders(first: 50) {
+          edges {
+            node {
+              id
+              status
+              lineItems(first: 100) {
+                edges {
+                  node {
+                    id
+                    remainingQuantity
+                    lineItem { id }
+                  }
+                }
+              }
+            }
+          }
         }
       }
+    }`;
 
-      if (stickerPreview) {
-        stickerPreview.innerHTML = `
-          <div class="wbPreviewPdf">
-            <div style="font-weight:600;margin-bottom:0.25rem;">Labels sent to PrintNode</div>
-            <div style="font-size:0.8rem;color:#64748b;">
-              Waybill: <strong>${waybillNo}</strong><br>
-              Service: ${pickedService} • Parcels: ${expected}
-            </div>
-          </div>`;
+    const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/graphql`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables: { orderId: orderGid } })
+    });
+
+    if (!res.ok) throw new Error(`Fulfillment order fetch failed: ${res.status}`);
+    const data = await res.json();
+    const edges = data?.data?.order?.fulfillmentOrders?.edges || [];
+    const map = {};
+    for (const edge of edges) {
+      const fo = edge.node;
+      for (const liEdge of fo.lineItems.edges || []) {
+        const node = liEdge.node;
+        map[node.lineItem.id] = {
+          fulfillmentOrderId: fo.id,
+          fulfillmentOrderLineItemId: node.id,
+          remainingQuantity: node.remainingQuantity
+        };
       }
-      if (printMount) printMount.innerHTML = "";
-    } else {
-      const labels = parcelIndexes.map((idx) => renderLabelHTML(waybillNo, pickedService, quoteCost, orderDetails, idx, expected));
-      mountLabelToPreviewAndPrint(labels[0], labels.join("\n"));
-      statusExplain("Booked", "ok");
-
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      await inlineImages(printMount);
-      await waitForImages(printMount);
-
-      if (labels.length) window.print();
     }
+    return map;
+  };
 
     if (statusChip) statusChip.textContent = "Booked";
     setBookingSummary(`WAYBILL: ${waybillNo}
 Service: ${pickedService}
 Parcels: ${expected}
 Estimated Cost: ${money(quoteCost)}
+  const createFulfillment = async (order, plan) => {
+    const map = await fetchFulfillmentMap(order.order_gid);
+    const shipments = plan.boxes.map((box, idx) => ({
+      boxIndex: idx + 1,
+      lineItems: Object.entries(box.items || {})
+        .filter(([, qty]) => qty > 0)
+        .map(([lineItemId, quantity]) => ({
+          fulfillmentOrderLineItemId: map[lineItemId]?.fulfillmentOrderLineItemId,
+          quantity
+        }))
+        .filter((li) => li.fulfillmentOrderLineItemId),
+      tracking: {
+        number: plan.bookingData?.waybill || "",
+        url: "",
+        company: CONFIG.TRACKING_COMPANY
+      }
+    }));
 
-${usedPdf ? "Label + waybill generated by ParcelPerfect (PDF)." : "Using local HTML label layout."}
+    const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/fulfillment/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderGid: order.order_gid,
+        shipments,
+        notifyCustomer: true
+      })
+    });
 
 Raw:
 ${JSON.stringify(cr, null, 2)}`);
@@ -1091,89 +1227,93 @@ async function handleScan(code) {
   armedForBooking = false;
 
   const expected = getExpectedParcelCount(orderDetails);
+    const data = await res.json();
+    if (!res.ok) {
+      const message = data?.message || "Shopify fulfillment failed";
+      throw new Error(message);
+    }
 
-  // TAGGED: auto-book immediately on first scan
-  if (hasParcelCountTag(orderDetails) && expected) {
-    cancelAutoBookTimer();
+    return data;
+  };
 
-    parcelsForOrder = new Set(Array.from({ length: expected }, (_, i) => i + 1));
-    renderSessionUI();
-    updateBookNowButton();
+  const handleBookingFlow = async (orderId, mode) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
 
-    statusExplain(`Tag detected (parcel_count_${expected}). Auto-booking...`, "ok");
-    await doBookingNow();
-    return;
-  }
-
-  // UNTAGGED: schedule auto-book 6s after last scan
-  renderSessionUI();
-  updateBookNowButton();
-  scheduleIdleAutoBook();
-}
-
-
-
-  async function fetchShopifyOrder(orderNo) {
     try {
-      const url = `${CONFIG.SHOPIFY.PROXY_BASE}/orders/by-name/${encodeURIComponent(orderNo)}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      const o = data.order || data || {};
-      const placeCodeFromMeta = data.customerPlaceCode || null;
+      if (!plan.boxes.length) throw new Error("Add at least one box before booking.");
 
-      const shipping = o.shipping_address || {};
-      const customer = o.customer || {};
-      const lineItems = o.line_items || [];
-
-      let parcelCountFromTag = null;
-      if (typeof o.tags === "string" && o.tags.trim()) {
-        const parts = o.tags.split(",").map((t) => t.trim().toLowerCase());
-        for (const t of parts) {
-          const m = t.match(/^parcel_count_(\d+)$/);
-          if (m) { parcelCountFromTag = parseInt(m[1], 10); break; }
-        }
+      if (plan.milestones.booked?.status === "ok" && mode !== "print" && mode !== "fulfill" && mode !== "notify") {
+        return;
       }
 
-      let totalGrams = 0;
-      for (const li of lineItems) {
-        const gramsPerUnit = Number(li.grams || 0);
-        const qty = Number(li.quantity || 1);
-        totalGrams += gramsPerUnit * qty;
+      if (mode === "print") {
+        if (!plan.bookingData) throw new Error("Missing booking data to reprint.");
+        setMilestone(plan, "printed", "pending", "Retrying print.");
+        await printLabels(plan.bookingData, order.name);
+        setMilestone(plan, "printed", "ok", "Labels printed via PrintNode.");
+        render();
+        return;
       }
-      const totalWeightKg = totalGrams / 1000;
 
-      const name =
-        shipping.name ||
-        `${customer.first_name || ""} ${customer.last_name || ""}`.trim() ||
-        o.name ||
-        String(orderNo);
+      if (mode === "fulfill") {
+        setMilestone(plan, "fulfilled", "pending", "Retrying fulfillment.");
+        const result = await createFulfillment(order, plan);
+        plan.fulfillmentIds = (result.results || []).map((r) => r.fulfillmentId).filter(Boolean);
+        const notifyErrors = (result.results || []).flatMap((r) => r.notifyErrors || []);
+        const userErrors = (result.results || []).flatMap((r) => r.userErrors || []);
 
-      const normalized = {
-        raw: o,
-        name,
-        phone: shipping.phone || customer.phone || "",
-        email: o.email || "",
-        address1: shipping.address1 || "",
-        address2: shipping.address2 || "",
-        city: shipping.city || "",
-        province: shipping.province || "",
-        postal: shipping.zip || "",
-        suburb: shipping.address2 || "",
-        line_items: lineItems,
-        totalWeightKg,
-        placeCode: placeCodeFromMeta,
-        placeLabel: null,
-        parcelCountFromTag,
-        manualParcelCount: null
-      };
-
-      if (!placeCodeFromMeta) {
-        const lookedUp = await lookupPlaceCodeFromPP(normalized);
-        if (lookedUp?.code != null) {
-          normalized.placeCode = lookedUp.code;
-          normalized.placeLabel = lookedUp.label;
+        if (userErrors.length) {
+          throw new Error(userErrors.map((e) => e.message).join(" | "));
         }
+
+        setMilestone(plan, "fulfilled", "ok", "Shopify fulfillment created.");
+        if (notifyErrors.length) {
+          setMilestone(plan, "notified", "err", notifyErrors.map((e) => e.message).join(" | "));
+        } else {
+          setMilestone(plan, "notified", "ok", "Customer notified.");
+        }
+        if (!notifyErrors.length) archiveOrder(order, plan);
+        render();
+        return;
+      }
+
+      if (mode === "notify") {
+        if (!plan.fulfillmentIds.length) throw new Error("No fulfillment IDs available for notify.");
+        setMilestone(plan, "notified", "pending", "Retrying notification.");
+        await notifyFulfillments(plan.fulfillmentIds);
+        setMilestone(plan, "notified", "ok", "Customer notified.");
+        archiveOrder(order, plan);
+        render();
+        return;
+      }
+
+      setMilestone(plan, "booked", "pending", "Booking ParcelPerfect waybill.");
+      const booking = await bookParcelPerfect(order, plan);
+      if (!booking.waybill) throw new Error("Booking failed to return a waybill number.");
+      plan.bookingData = booking;
+      plan.boxes = plan.boxes.map((box) => ({
+        ...box,
+        trackingNumber: booking.waybill,
+        trackingCompany: CONFIG.TRACKING_COMPANY
+      }));
+      setMilestone(plan, "booked", "ok", `Waybill ${booking.waybill} booked.`);
+
+      setMilestone(plan, "printed", "pending", "Printing labels.");
+      await printLabels(booking, order.name);
+      setMilestone(plan, "printed", "ok", "Labels printed via PrintNode.");
+
+      setMilestone(plan, "fulfilled", "pending", "Creating Shopify fulfillment.");
+      const fulfillmentRes = await createFulfillment(order, plan);
+      plan.fulfillmentIds = (fulfillmentRes.results || []).map((r) => r.fulfillmentId).filter(Boolean);
+      const notifyErrors = (fulfillmentRes.results || []).flatMap((r) => r.notifyErrors || []);
+      const userErrors = (fulfillmentRes.results || []).flatMap((r) => r.userErrors || []);
+
+      if (userErrors.length) {
+        setMilestone(plan, "fulfilled", "err", userErrors.map((e) => e.message).join(" | "));
+        render();
+        return;
       }
 
       return normalized;
@@ -1248,11 +1388,30 @@ async function handleScan(code) {
 
     filtered.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
     const list = filtered.slice(0, 40);
+      setMilestone(plan, "fulfilled", "ok", "Shopify fulfillment created.");
 
-    if (!list.length) {
-      dispatchBoard.innerHTML = `<div class="dispatchBoardEmpty">No open shipping / delivery / collections right now.</div>`;
-      return;
+      if (notifyErrors.length) {
+        setMilestone(plan, "notified", "err", notifyErrors.map((e) => e.message).join(" | "));
+      } else {
+        setMilestone(plan, "notified", "ok", "Customer notified.");
+        archiveOrder(order, plan);
+      }
+    } catch (err) {
+      const message = String(err?.message || err);
+      if (mode === "print") {
+        setMilestone(plan, "printed", "err", message);
+      } else if (mode === "fulfill") {
+        setMilestone(plan, "fulfilled", "err", message);
+      } else if (mode === "notify") {
+        setMilestone(plan, "notified", "err", message);
+      } else {
+        setMilestone(plan, "booked", "err", message);
+      }
+    } finally {
+      savePlans();
+      render();
     }
+  };
 
     const cols = [
       { id: "b2b", label: "B2B Shipping", className: "lane--b2b" },
@@ -1326,49 +1485,66 @@ async function handleScan(code) {
       })
       .join("");
   }
+  const notifyFulfillments = async (fulfillmentIds) => {
+    const mutation = `mutation FulfillmentNotify($id: ID!) {
+      fulfillmentNotify(fulfillmentId: $id, notifyCustomer: true) {
+        fulfillment { id status }
+        userErrors { field message }
+      }
+    }`;
 
-  async function refreshDispatchData() {
-    try {
-      const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/orders/open`);
+    for (const id of fulfillmentIds) {
+      const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/graphql`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: mutation, variables: { id } })
+      });
       const data = await res.json();
-      renderDispatchBoard(data.orders || []);
-      if (dispatchStamp) dispatchStamp.textContent = "Updated " + new Date().toLocaleTimeString();
-    } catch (e) {
-      appendDebug("Dispatch refresh failed: " + String(e));
-      if (dispatchBoard) dispatchBoard.innerHTML = `<div class="dispatchBoardEmpty">Error loading orders.</div>`;
-      if (dispatchStamp) dispatchStamp.textContent = "Dispatch: error";
+      const errors = data?.data?.fulfillmentNotify?.userErrors || [];
+      if (errors.length) throw new Error(errors.map((e) => e.message).join(" | "));
     }
-  }
+  };
 
-  function switchMainView(view) {
-    const showScan = view === "scan";
+  const archiveOrder = (order, plan) => {
+    setMilestone(plan, "archived", "ok", "Moved to Recently Fulfilled.");
+    recentFulfilled.unshift({
+      date: new Date().toISOString(),
+      orderName: order.name,
+      waybill: plan.bookingData?.waybill || "-",
+      customer: order.customer_name || "-",
+      shipTo: formatShipTo(order)
+    });
+    recentFulfilled = recentFulfilled.slice(0, 50);
+    saveRecent();
+  };
 
-    if (viewScan) {
-      viewScan.hidden = !showScan;
-      viewScan.classList.toggle("flView--active", showScan);
-    }
-    if (viewOps) {
-      viewOps.hidden = showScan;
-      viewOps.classList.toggle("flView--active", !showScan);
-    }
+  openOrdersEl?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
 
-    navScan?.classList.toggle("flNavBtn--active", showScan);
-    navOps?.classList.toggle("flNavBtn--active", !showScan);
+    const action = button.dataset.action;
+    const orderId = button.dataset.orderId;
+    const boxIndex = Number(button.dataset.boxIndex || 0);
+    const lineId = button.dataset.lineId;
 
-    if (showScan) {
-      statusExplain("Ready to scan orders…", "info");
-      scanInput?.focus();
-    } else {
-      statusExplain("Viewing orders / ops dashboard", "info");
-    }
-  }
+    if (action === "toggle") return toggleExpand(orderId);
+    if (action === "add-box") return addBox(orderId);
+    if (action === "remove-box") return removeBox(orderId, boxIndex);
+    if (action === "inc") return updateAllocation(orderId, boxIndex, lineId, 1);
+    if (action === "dec") return updateAllocation(orderId, boxIndex, lineId, -1);
+    if (action === "book") return handleBookingFlow(orderId);
+    if (action === "retry-print") return handleBookingFlow(orderId, "print");
+    if (action === "retry-fulfill") return handleBookingFlow(orderId, "fulfill");
+    if (action === "retry-notify") return handleBookingFlow(orderId, "notify");
+  });
 
-  scanInput?.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter") {
-      const code = scanInput.value.trim();
-      scanInput.value = "";
-      if (!code) return;
-      await handleScan(code);
+  refreshBtn?.addEventListener("click", async () => {
+    try {
+      await fetchOpenOrders();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      render();
     }
   });
 
@@ -1507,4 +1683,22 @@ btnBookNow?.addEventListener("click", async () => {
 
   window.__fl = window.__fl || {};
   window.__fl.bookNow = doBookingNow;
+  clearStorageBtn?.addEventListener("click", () => {
+    localStorage.removeItem(STORAGE_KEYS.plans);
+    localStorage.removeItem(STORAGE_KEYS.recent);
+    loadStorage();
+    render();
+  });
+
+  const init = async () => {
+    loadStorage();
+    try {
+      await fetchOpenOrders();
+    } catch (err) {
+      console.error(err);
+    }
+    render();
+  };
+
+  init();
 })();

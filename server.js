@@ -17,6 +17,7 @@ const app = express();
 
 const {
   PORT = "3000",
+  HOST = "0.0.0.0",
   NODE_ENV = "development",
   FRONTEND_ORIGIN = "http://localhost:3000",
 
@@ -39,16 +40,18 @@ app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(express.json({ limit: "1mb" }));
 
+const allowAllOrigins = String(FRONTEND_ORIGIN || "").trim() === "*" || !String(FRONTEND_ORIGIN || "").trim();
 const allowedOrigins = new Set(
   String(FRONTEND_ORIGIN || "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean)
+    .filter((s) => s && s !== "*")
 );
 
 app.use(
   cors({
     origin: (origin, cb) => {
+      if (allowAllOrigins) return cb(null, true);
       if (!origin || allowedOrigins.has(origin)) return cb(null, true);
       return cb(new Error("CORS: origin not allowed"));
     },
@@ -148,6 +151,30 @@ async function shopifyFetch(pathname, { method = "GET", headers = {}, body } = {
   }
 
   return resp;
+}
+
+async function shopifyGraphql(query, variables = {}) {
+  const resp = await shopifyFetch(`/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+    method: "POST",
+    body: JSON.stringify({ query, variables })
+  });
+
+  const text = await resp.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = { raw: text };
+  }
+
+  if (!resp.ok) {
+    const error = new Error(`Shopify GraphQL error ${resp.status}`);
+    error.status = resp.status;
+    error.payload = payload;
+    throw error;
+  }
+
+  return payload;
 }
 
 app.post("/pp", async (req, res) => {
@@ -336,8 +363,10 @@ app.get("/shopify/orders/open", async (req, res) => {
       return {
         id: o.id,
         name: o.name,
+        order_gid: o.admin_graphql_api_id,
         customer_name,
         created_at: o.processed_at || o.created_at,
+        email: o.email,
         fulfillment_status: o.fulfillment_status,
         tags: o.tags || "",
         shipping_lines: (o.shipping_lines || []).map((line) => line.title || line.code || line.name || ""),
@@ -350,7 +379,13 @@ app.get("/shopify/orders/open", async (req, res) => {
         shipping_phone: shipping.phone || "",
         shipping_name: shipping.name || customer_name,
         parcel_count: parcelCountFromTag,
-        line_items: (o.line_items || []).map((li) => ({ title: li.title, quantity: li.quantity }))
+        line_items: (o.line_items || []).map((li) => ({
+          id: li.id,
+          gid: li.admin_graphql_api_id,
+          title: li.title,
+          quantity: li.quantity,
+          fulfillable_quantity: li.fulfillable_quantity
+        }))
       };
     });
 
@@ -444,6 +479,176 @@ app.post("/shopify/fulfill", async (req, res) => {
   }
 });
 
+app.post("/shopify/graphql", async (req, res) => {
+  try {
+    if (!requireShopifyConfigured(res)) return;
+
+    const { query, variables } = req.body || {};
+    if (!query) return badRequest(res, "Missing GraphQL query in body");
+
+    const payload = await shopifyGraphql(query, variables || {});
+    return res.json(payload);
+  } catch (err) {
+    return res.status(err.status || 502).json({
+      error: "SHOPIFY_GRAPHQL_ERROR",
+      message: String(err?.message || err),
+      payload: err.payload || null
+    });
+  }
+});
+
+app.post("/shopify/fulfillment/create", async (req, res) => {
+  try {
+    if (!requireShopifyConfigured(res)) return;
+
+    const { orderGid, shipments, notifyCustomer } = req.body || {};
+    if (!orderGid) return badRequest(res, "Missing orderGid");
+    if (!Array.isArray(shipments) || !shipments.length) return badRequest(res, "Missing shipments array");
+
+    const query = `query FulfillmentOrders($orderId: ID!) {
+      order(id: $orderId) {
+        fulfillmentOrders(first: 50) {
+          edges {
+            node {
+              id
+              status
+              lineItems(first: 100) {
+                edges {
+                  node {
+                    id
+                    remainingQuantity
+                    lineItem { id }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }`;
+
+    const data = await shopifyGraphql(query, { orderId: orderGid });
+    const edges = data?.data?.order?.fulfillmentOrders?.edges || [];
+
+    const lineItemMap = new Map();
+    for (const edge of edges) {
+      const fo = edge.node;
+      for (const liEdge of fo.lineItems.edges || []) {
+        const node = liEdge.node;
+        lineItemMap.set(node.id, {
+          fulfillmentOrderId: fo.id,
+          remainingQuantity: node.remainingQuantity
+        });
+      }
+    }
+
+    const results = [];
+    for (let i = 0; i < shipments.length; i += 1) {
+      const shipment = shipments[i];
+      const tracking = shipment.tracking || {};
+      const items = Array.isArray(shipment.lineItems) ? shipment.lineItems : [];
+
+      const grouped = new Map();
+      const userErrors = [];
+
+      for (const item of items) {
+        const mapEntry = lineItemMap.get(item.fulfillmentOrderLineItemId);
+        if (!mapEntry) {
+          userErrors.push({ message: `Unknown fulfillment order line item ${item.fulfillmentOrderLineItemId}` });
+          continue;
+        }
+
+        const qty = Number(item.quantity || 0);
+        if (!qty || qty <= 0) continue;
+
+        if (mapEntry.remainingQuantity != null && qty > mapEntry.remainingQuantity) {
+          userErrors.push({ message: `Quantity exceeds remaining for ${item.fulfillmentOrderLineItemId}` });
+          continue;
+        }
+
+        if (!grouped.has(mapEntry.fulfillmentOrderId)) grouped.set(mapEntry.fulfillmentOrderId, []);
+        grouped.get(mapEntry.fulfillmentOrderId).push({ id: item.fulfillmentOrderLineItemId, quantity: qty });
+      }
+
+      if (!grouped.size) {
+        results.push({
+          shipmentIndex: i,
+          fulfillmentId: null,
+          status: "error",
+          userErrors: userErrors.length ? userErrors : [{ message: "No line items to fulfill" }],
+          notifyErrors: []
+        });
+        continue;
+      }
+
+      const fulfillmentInput = {
+        lineItemsByFulfillmentOrder: Array.from(grouped.entries()).map(([fulfillmentOrderId, fulfillmentOrderLineItems]) => ({
+          fulfillmentOrderId,
+          fulfillmentOrderLineItems
+        })),
+        trackingInfo: {
+          number: tracking.number || "",
+          url: tracking.url || null,
+          company: tracking.company || "SWE / ParcelPerfect"
+        },
+        notifyCustomer: false
+      };
+
+      const mutation = `mutation FulfillmentCreate($fulfillment: FulfillmentV2Input!) {
+        fulfillmentCreate(fulfillment: $fulfillment) {
+          fulfillment { id status }
+          userErrors { field message }
+        }
+      }`;
+
+      let fulfillmentId = null;
+      let notifyErrors = [];
+      let status = "created";
+      let createErrors = userErrors;
+
+      if (!userErrors.length) {
+        const createResp = await shopifyGraphql(mutation, { fulfillment: fulfillmentInput });
+        const createData = createResp?.data?.fulfillmentCreate;
+        const createUserErrors = createData?.userErrors || [];
+        if (createUserErrors.length) {
+          createErrors = createUserErrors;
+          status = "error";
+        } else {
+          fulfillmentId = createData?.fulfillment?.id || null;
+          status = createData?.fulfillment?.status || "success";
+        }
+
+        if (fulfillmentId && notifyCustomer) {
+          const notifyMutation = `mutation FulfillmentNotify($id: ID!) {
+            fulfillmentNotify(fulfillmentId: $id, notifyCustomer: true) {
+              fulfillment { id status }
+              userErrors { field message }
+            }
+          }`;
+          const notifyResp = await shopifyGraphql(notifyMutation, { id: fulfillmentId });
+          notifyErrors = notifyResp?.data?.fulfillmentNotify?.userErrors || [];
+        }
+      }
+
+      results.push({
+        shipmentIndex: i,
+        fulfillmentId,
+        status,
+        userErrors: createErrors,
+        notifyErrors
+      });
+    }
+
+    return res.json({ ok: true, results });
+  } catch (err) {
+    return res.status(err.status || 502).json({
+      error: "UPSTREAM_ERROR",
+      message: String(err?.message || err),
+      payload: err.payload || null
+    });
+  }
+});
+
 app.post("/printnode/print", async (req, res) => {
   try {
     const { pdfBase64, title } = req.body || {};
@@ -507,7 +712,9 @@ app.get("/app.js", (_req, res) => res.sendFile(path.join(__dirname, "app.js")));
 
 app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
-app.listen(Number(PORT), () => {
-  console.log(`Scan Station server listening on http://localhost:${PORT}`);
-  console.log(`Allowed origins: ${[...allowedOrigins].join(", ") || "(none)"}`);
+app.listen(Number(PORT), HOST, () => {
+  const hostLabel = HOST === "0.0.0.0" ? "0.0.0.0 (all interfaces)" : HOST;
+  console.log(`Scan Station server listening on http://${HOST}:${PORT}`);
+  console.log(`Host binding: ${hostLabel}`);
+  console.log(`Allowed origins: ${allowAllOrigins ? "ALL" : [...allowedOrigins].join(", ") || "(none)"}`);
 });

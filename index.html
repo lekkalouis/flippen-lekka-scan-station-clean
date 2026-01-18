@@ -486,4 +486,407 @@
 
   <script src="/app.js"></script>
 </body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dispatch / Fulfillment Board</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1220;
+        --panel: #0f172a;
+        --panel-2: #111c35;
+        --border: #1f2a44;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --accent-2: #22c55e;
+        --warn: #f59e0b;
+        --danger: #ef4444;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(10, 15, 30, 0.9);
+        backdrop-filter: blur(6px);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .shell {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+
+      .headerRow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .titleBlock h1 {
+        margin: 0;
+        font-size: 1.6rem;
+      }
+
+      .titleBlock p {
+        margin: 0.35rem 0 0;
+        color: var(--muted);
+      }
+
+      button {
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 0.5rem 0.9rem;
+        font-size: 0.9rem;
+        cursor: pointer;
+        background: var(--panel-2);
+        color: var(--text);
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.success {
+        background: var(--accent-2);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.warn {
+        background: var(--warn);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.ghost {
+        background: transparent;
+        border-color: var(--border);
+        color: var(--muted);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .sectionTitle {
+        margin: 2rem 0 0.75rem;
+        font-size: 1.2rem;
+      }
+
+      .orderGrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 1.25rem;
+      }
+
+      .orderCard {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+
+      .cardHeader {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+
+      .cardHeader h3 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .chipRow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+
+      .chip {
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.7rem;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+
+      .chip.ok {
+        border-color: rgba(34, 197, 94, 0.5);
+        color: #86efac;
+      }
+
+      .chip.warn {
+        border-color: rgba(245, 158, 11, 0.5);
+        color: #fde68a;
+      }
+
+      .chip.err {
+        border-color: rgba(239, 68, 68, 0.6);
+        color: #fca5a5;
+      }
+
+      .lineItems {
+        border-top: 1px dashed var(--border);
+        padding-top: 0.75rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .lineItem {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+      }
+
+      .cardActions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .editor {
+        background: rgba(15, 23, 42, 0.6);
+        border-radius: 12px;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+      }
+
+      .editor h4 {
+        margin: 0 0 0.5rem;
+        font-size: 0.95rem;
+      }
+
+      .remainingList {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+      }
+
+      .boxCard {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.6rem;
+        margin-top: 0.6rem;
+      }
+
+      .boxHeader {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.4rem;
+      }
+
+      .qtyRow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.8rem;
+      }
+
+      .qtyControls {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+      }
+
+      .qtyControls button {
+        padding: 0.2rem 0.45rem;
+        border-radius: 8px;
+      }
+
+      .milestones {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.75rem;
+      }
+
+      .milestone {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .milestone span {
+        color: var(--muted);
+      }
+
+      .milestone .state.ok {
+        color: #4ade80;
+      }
+
+      .milestone .state.err {
+        color: #f87171;
+      }
+
+      .progress {
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+      }
+
+      .progressStep {
+        padding: 0.2rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+
+      .progressStep.active {
+        color: #93c5fd;
+        border-color: rgba(59, 130, 246, 0.5);
+      }
+
+      .progressStep.done {
+        color: #86efac;
+        border-color: rgba(34, 197, 94, 0.5);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      th,
+      td {
+        padding: 0.75rem;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        font-size: 0.85rem;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .emptyState {
+        padding: 1rem;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        color: var(--muted);
+      }
+
+      .logList {
+        max-height: 140px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.5rem;
+        font-size: 0.75rem;
+        background: rgba(15, 23, 42, 0.4);
+      }
+
+      .logEntry {
+        display: flex;
+        gap: 0.35rem;
+        align-items: center;
+        padding: 0.15rem 0;
+      }
+
+      .logEntry.ok::before {
+        content: "✔";
+        color: #22c55e;
+      }
+
+      .logEntry.err::before {
+        content: "✖";
+        color: #ef4444;
+      }
+
+      .logEntry.info::before {
+        content: "•";
+        color: var(--muted);
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      @media (max-width: 720px) {
+        .headerRow {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="shell headerRow">
+        <div class="titleBlock">
+          <h1>Dispatch / Fulfillment Board</h1>
+          <p>Pack, book, print, fulfill, and archive with ParcelPerfect + Shopify.</p>
+        </div>
+        <div class="toolbar">
+          <button id="refreshBtn" class="ghost">Refresh</button>
+          <button id="clearStorageBtn" class="ghost">Reset Local Cache</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section>
+        <h2 class="sectionTitle">Open Orders</h2>
+        <div id="openOrders" class="orderGrid"></div>
+      </section>
+
+      <section>
+        <h2 class="sectionTitle">Recently Fulfilled</h2>
+        <div id="recentFulfilledEmpty" class="emptyState">No fulfilled orders stored yet.</div>
+        <table id="recentFulfilledTable" hidden>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Order #</th>
+              <th>Waybill #</th>
+              <th>Customer</th>
+              <th>Ship To</th>
+            </tr>
+          </thead>
+          <tbody id="recentFulfilledBody"></tbody>
+        </table>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
 </html>
