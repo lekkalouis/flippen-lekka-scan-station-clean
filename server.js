@@ -17,6 +17,7 @@ const app = express();
 
 const {
   PORT = "3000",
+  HOST = "0.0.0.0",
   NODE_ENV = "development",
   FRONTEND_ORIGIN = "http://localhost:3000",
 
@@ -39,16 +40,18 @@ app.disable("x-powered-by");
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 app.use(express.json({ limit: "1mb" }));
 
+const allowAllOrigins = String(FRONTEND_ORIGIN || "").trim() === "*" || !String(FRONTEND_ORIGIN || "").trim();
 const allowedOrigins = new Set(
   String(FRONTEND_ORIGIN || "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean)
+    .filter((s) => s && s !== "*")
 );
 
 app.use(
   cors({
     origin: (origin, cb) => {
+      if (allowAllOrigins) return cb(null, true);
       if (!origin || allowedOrigins.has(origin)) return cb(null, true);
       return cb(new Error("CORS: origin not allowed"));
     },
@@ -707,7 +710,9 @@ app.get("/app.js", (_req, res) => res.sendFile(path.join(__dirname, "app.js")));
 
 app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "index.html")));
 
-app.listen(Number(PORT), () => {
-  console.log(`Scan Station server listening on http://localhost:${PORT}`);
-  console.log(`Allowed origins: ${[...allowedOrigins].join(", ") || "(none)"}`);
+app.listen(Number(PORT), HOST, () => {
+  const hostLabel = HOST === "0.0.0.0" ? "0.0.0.0 (all interfaces)" : HOST;
+  console.log(`Scan Station server listening on http://${HOST}:${PORT}`);
+  console.log(`Host binding: ${hostLabel}`);
+  console.log(`Allowed origins: ${allowAllOrigins ? "ALL" : [...allowedOrigins].join(", ") || "(none)"}`);
 });
