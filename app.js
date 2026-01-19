@@ -191,6 +191,10 @@ function isAutoBookOrder(details) {
   let packPlans = {};
   let recentFulfilled = [];
 
+  let orders = [];
+  let packPlans = {};
+  let recentFulfilled = [];
+
   const loadStorage = () => {
     try {
       const rawPlans = localStorage.getItem(STORAGE_KEYS.plans);
@@ -274,13 +278,18 @@ function isAutoBookOrder(details) {
     "11011001100","11001101100","11001100110","10010011000","10010001100","10001001100","10011001000","10011000100","10001100100","11001001000","11001000100","11000100100","10110011100","10011011100","10011001110","10111001100","10011101100","10011100110","11001110010","11001011100","11001001110","11011100100","11001110100","11101101110","11101001100","11100101100","11100100110","11101100100","11100110100","11100110010","11011011000","11011000110","11000110110","10100011000","10001011000","10001000110","10110001000","10001101000","10001100010","11010001000","11000101000","11000100010","10110111000","10110001110","10001101110","10111011000","10111000110","10001110110","11101110110","11010001110","11000101110","11011101000","11011100010","11011101110","11101011000","11101000110","11100010110","11101101000","11101100010","11100011010","11101111010","11001000010","11110001010","10100110000","10100001100","10010110000","10010000110","10000101100","10000100110","10110010000","10110000100","10011010000","10011000010","10000110100","10000110010","11000010010","11001010000","11110111010","11000010100","10001111010","10100111100","10010111100","10010011110","10111100100","10011110100","10011110010","11110100100","11110010100","11110010010","11011011110","11011110110","11110110110","10101111000","10100011110","10001011110","10111101000","10111100010","11110101000","11110100010","10111011110","10111101110","11101011110","11110101110","11010000100","11010010000","11010011100","11000111010","11010111000","1100011101011"
   ];
 
-  function code128BToValues(str) {
-    const vals = [];
-    for (let i = 0; i < str.length; i++) {
-      const c = str.charCodeAt(i);
-      if (c < 32 || c > 126) throw new Error("Unsupported char " + str[i]);
-      vals.push(c - 32);
+  const loadStorage = () => {
+    try {
+      const rawPlans = localStorage.getItem(STORAGE_KEYS.plans);
+      packPlans = rawPlans ? JSON.parse(rawPlans) : {};
+    } catch (err) {
+      packPlans = {};
     }
+
+    try {
+      const rawRecent = localStorage.getItem(STORAGE_KEYS.recent);
+      recentFulfilled = rawRecent ? JSON.parse(rawRecent) : [];
+    } catch (err) {
     return vals;
   }
 
@@ -883,6 +892,135 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     let data;
     try {
       data = JSON.parse(text);
+    } catch (err) {
+      data = { raw: text };
+    }
+
+    return { status: res.status, statusText: res.statusText, data };
+  };
+
+  const extractQuoteFromV28 = (shape) => {
+    const obj = shape || {};
+    if (obj.quoteno) return { quoteno: obj.quoteno, rates: obj.rates || [] };
+    const res = Array.isArray(obj.results) && obj.results[0] ? obj.results[0] : null;
+    const quoteno = (res && res.quoteno) || null;
+    const rates = res && Array.isArray(res.rates) ? res.rates : [];
+    return { quoteno, rates };
+  };
+
+  const resolvePlaceCode = async (order) => {
+    const city = String(order.shipping_city || "").trim();
+    const suburb = String(order.shipping_address2 || "").trim();
+    const search = [suburb, city].filter(Boolean).join(" ");
+    if (!search) return null;
+
+    const res = await fetch(`/pp/place?q=${encodeURIComponent(search)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data.results) ? data.results : [];
+    if (!list.length) return null;
+    const best = list.find((p) => String(p.ring) === "0") || list[0];
+    if (!best || best.place == null) return null;
+    return Number(best.place) || best.place;
+  };
+
+  const buildParcelPerfectPayload = async (order, parcelCount) => {
+    const destplace = await resolvePlaceCode(order);
+    const details = {
+      ...CONFIG.ORIGIN,
+      destpers: order.shipping_name || order.customer_name,
+      destperadd1: order.shipping_address1,
+      destperadd2: order.shipping_address2 || "",
+      destperadd3: order.shipping_city,
+      destperadd4: order.shipping_province,
+      destperpcode: order.shipping_postal,
+      desttown: order.shipping_city,
+      destplace,
+      destpercontact: order.shipping_name || order.customer_name,
+      destperphone: order.shipping_phone || "",
+      notifydestpers: 1,
+      destpercell: order.shipping_phone || "",
+      destperemail: order.email || "",
+      reference: `Order ${order.name}`
+    };
+
+    const contents = Array.from({ length: parcelCount }, (_, i) => ({
+      item: i + 1,
+      pieces: 1,
+      dim1: CONFIG.BOX_DIM.dim1,
+      dim2: CONFIG.BOX_DIM.dim2,
+      dim3: CONFIG.BOX_DIM.dim3,
+      actmass: CONFIG.BOX_DIM.massKg
+    }));
+
+
+  const fetchOpenOrders = async () => {
+    const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/orders/open`);
+    if (!res.ok) throw new Error(`Open orders fetch failed: ${res.status}`);
+    const data = await res.json();
+    orders = data.orders || [];
+  };
+
+  const updateAllocation = (orderId, boxIndex, lineId, delta) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    const line = normalizeLineItems(order).find((li) => String(li.id) === String(lineId));
+    if (!line) return;
+
+    const current = Number(plan.boxes[boxIndex]?.items?.[line.id] || 0);
+    const remaining = getRemainingQty(order, plan, line) + current;
+    const next = Math.max(0, Math.min(current + delta, remaining));
+
+    if (!plan.boxes[boxIndex].items) plan.boxes[boxIndex].items = {};
+    plan.boxes[boxIndex].items[line.id] = next;
+
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const addBox = (orderId) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.boxes.push({ boxIndex: plan.boxes.length + 1, items: {} });
+    plan.expanded = true;
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const removeBox = (orderId, boxIndex) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.boxes.splice(boxIndex, 1);
+    savePlans();
+    updatePlanState(order, plan);
+    render();
+  };
+
+  const toggleExpand = (orderId) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+    plan.expanded = !plan.expanded;
+    savePlans();
+    render();
+  };
+
+  const ppCall = async (payload) => {
+    const res = await fetch(CONFIG.PP_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
     } catch {
       data = { raw: text };
     }
@@ -951,33 +1089,18 @@ admin@flippenlekkaspices.co.za`.replace(/\n/g, "<br>");
     const parcelCount = plan.boxes.length;
     if (!parcelCount) throw new Error("No boxes to book.");
 
-    if (missing.length) {
-      statusExplain("Quote failed", "err");
-      setBookingSummary(
-        `Cannot request quote — missing: ${missing.join(", ")}\n\nShip To:\n${JSON.stringify(orderDetails, null, 2)}`
-      );
-      armedForBooking = false;
-      return;
+    const payload = await buildParcelPerfectPayload(order, parcelCount);
+    if (!payload.details.destplace) {
+      throw new Error("Missing destination place code. Update address or place code.");
     }
 
     const quoteRes = await ppCall({ method: "requestQuote", classVal: "quote", params: payload });
-    if (!quoteRes || quoteRes.status !== 200) {
-      statusExplain("Quote failed", "err");
-      setBookingSummary(
-        `Quote error (HTTP ${quoteRes?.status}): ${quoteRes?.statusText}\n\n${JSON.stringify(quoteRes?.data, null, 2)}`
-      );
-      if (quoteBox) quoteBox.textContent = "No quote — check place code / proxy / token.";
-      armedForBooking = false;
-      return;
+    if (quoteRes.status !== 200) {
+      throw new Error(`Quote failed: ${quoteRes.status} ${quoteRes.statusText}`);
     }
 
     const { quoteno, rates } = extractQuoteFromV28(quoteRes.data || {});
-    if (!quoteno) {
-      statusExplain("Quote failed", "err");
-      setBookingSummary(`No quote number.\n${JSON.stringify(quoteRes.data, null, 2)}`);
-      armedForBooking = false;
-      return;
-    }
+    if (!quoteno) throw new Error("Quote missing quoteno.");
 
     const pickedService = pickService(rates);
     const chosenRate = rates?.find((r) => r.service === pickedService) || rates?.[0] || null;
@@ -1222,9 +1345,56 @@ async function handleScan(code) {
   return;
 }
 
+    const res = await fetch(`${CONFIG.SHOPIFY.PROXY_BASE}/fulfillment/create`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orderGid: order.order_gid,
+        shipments,
+        notifyCustomer: true
+      })
+    });
 
-  parcelsForOrder.add(parsed.parcelSeq);
-  armedForBooking = false;
+    const data = await res.json();
+    if (!res.ok) {
+      const message = data?.message || "Shopify fulfillment failed";
+      throw new Error(message);
+    }
+
+    return data;
+  };
+
+  const handleBookingFlow = async (orderId, mode) => {
+    const order = orders.find((o) => String(o.id) === String(orderId));
+    if (!order) return;
+    const plan = getPlan(order);
+
+    try {
+      if (!plan.boxes.length) throw new Error("Add at least one box before booking.");
+
+      if (plan.milestones.booked?.status === "ok" && mode !== "print" && mode !== "fulfill" && mode !== "notify") {
+        return;
+      }
+
+      if (mode === "print") {
+        if (!plan.bookingData) throw new Error("Missing booking data to reprint.");
+        setMilestone(plan, "printed", "pending", "Retrying print.");
+        await printLabels(plan.bookingData, order.name);
+        setMilestone(plan, "printed", "ok", "Labels printed via PrintNode.");
+        render();
+        return;
+      }
+
+      if (mode === "fulfill") {
+        setMilestone(plan, "fulfilled", "pending", "Retrying fulfillment.");
+        const result = await createFulfillment(order, plan);
+        plan.fulfillmentIds = (result.results || []).map((r) => r.fulfillmentId).filter(Boolean);
+        const notifyErrors = (result.results || []).flatMap((r) => r.notifyErrors || []);
+        const userErrors = (result.results || []).flatMap((r) => r.userErrors || []);
+
+        if (userErrors.length) {
+          throw new Error(userErrors.map((e) => e.message).join(" | "));
+        }
 
   const expected = getExpectedParcelCount(orderDetails);
     const data = await res.json();
@@ -1315,6 +1485,8 @@ async function handleScan(code) {
         render();
         return;
       }
+
+      setMilestone(plan, "fulfilled", "ok", "Shopify fulfillment created.");
 
       return normalized;
     } catch (e) {
@@ -1546,56 +1718,68 @@ async function handleScan(code) {
     } finally {
       render();
     }
+  };
+
+  const archiveOrder = (order, plan) => {
+    setMilestone(plan, "archived", "ok", "Moved to Recently Fulfilled.");
+    recentFulfilled.unshift({
+      date: new Date().toISOString(),
+      orderName: order.name,
+      waybill: plan.bookingData?.waybill || "-",
+      customer: order.customer_name || "-",
+      shipTo: formatShipTo(order)
+    });
+    recentFulfilled = recentFulfilled.slice(0, 50);
+    saveRecent();
+  };
+
+  openOrdersEl?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+
+    const action = button.dataset.action;
+    const orderId = button.dataset.orderId;
+    const boxIndex = Number(button.dataset.boxIndex || 0);
+    const lineId = button.dataset.lineId;
+
+    if (action === "toggle") return toggleExpand(orderId);
+    if (action === "add-box") return addBox(orderId);
+    if (action === "remove-box") return removeBox(orderId, boxIndex);
+    if (action === "inc") return updateAllocation(orderId, boxIndex, lineId, 1);
+    if (action === "dec") return updateAllocation(orderId, boxIndex, lineId, -1);
+    if (action === "book") return handleBookingFlow(orderId);
+    if (action === "retry-print") return handleBookingFlow(orderId, "print");
+    if (action === "retry-fulfill") return handleBookingFlow(orderId, "fulfill");
+    if (action === "retry-notify") return handleBookingFlow(orderId, "notify");
   });
 
-  modeToggleBtn?.addEventListener("click", () => {
-    autoBookEnabled = !autoBookEnabled;
-    if (!autoBookEnabled) cancelAutoBookTimer();
-    updateAutoModeUI();
-    statusExplain(autoBookEnabled ? "Auto-book enabled." : "Manual mode enabled.", "info");
-  });
-
-  focusScannerBtn?.addEventListener("click", () => {
-    scanInput?.focus();
-  });
-
-  toggleAddressBtn?.addEventListener("click", () => {
-    if (!addrResults) return;
-    const show = addrResults.closest("#addrBox")?.hasAttribute("hidden");
-    const box = addrResults.closest("#addrBox");
-    if (!box) return;
-    if (show) {
-      box.removeAttribute("hidden");
-      addrSearch?.focus();
-    } else {
-      box.setAttribute("hidden", "");
-    }
-  });
-
-  toggleServiceBtn?.addEventListener("click", () => {
-    const box = serviceSelect?.closest("#svcBox");
-    if (!box) return;
-    if (box.hasAttribute("hidden")) {
-      box.removeAttribute("hidden");
-      serviceSelect?.focus();
-    } else {
-      box.setAttribute("hidden", "");
-    }
-  });
-
-  copyShipToBtn?.addEventListener("click", async () => {
-    if (!shipToCard) return;
-    const text = shipToCard.textContent?.trim();
-    if (!text) {
-      statusExplain("No ship-to data to copy.", "warn");
-      return;
-    }
+  refreshBtn?.addEventListener("click", async () => {
     try {
-      await navigator.clipboard.writeText(text);
-      statusExplain("Ship-to copied to clipboard.", "ok");
-    } catch {
-      statusExplain("Clipboard blocked. Select text manually.", "warn");
+      await fetchOpenOrders();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      render();
     }
+  });
+
+  clearStorageBtn?.addEventListener("click", () => {
+    localStorage.removeItem(STORAGE_KEYS.plans);
+    localStorage.removeItem(STORAGE_KEYS.recent);
+    loadStorage();
+    render();
+  });
+
+  const init = async () => {
+    loadStorage();
+    try {
+      await fetchOpenOrders();
+    } catch (err) {
+      console.error(err);
+    }
+    render();
+  };
+
   });
 
   const persistDispatchField = (target) => {
