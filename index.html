@@ -373,6 +373,878 @@
         <div class="toolbar">
           <button id="refreshBtn" class="ghost">Refresh</button>
           <button id="clearStorageBtn" class="ghost">Reset Local Cache</button>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Flippen Lekka Scan Station — v5 (cleaned + 100×150 print lock)</title>
+<style>
+  :root{
+    --bg-dark:#0b1120; --panel-dark:#111827; --panel-soft:#0f172a; --accent:#38bdf8;
+    --accent-strong:#0ea5e9; --good:#34d399; --warn:#fbbf24; --danger:#f87171;
+    --radius-lg:1rem; --radius-md:.65rem; --radius-sm:.45rem;
+    --mono:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,Inter,Roboto,"Segoe UI",system-ui,sans-serif;
+    --print-scale:1.0;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;
+    min-height:100dvh;
+    font-family:var(--sans);
+    color:#e2e8f0;
+    background:
+      radial-gradient(circle at 20% 20%, rgba(56,189,248,.12) 0%, rgba(15,23,42,0) 60%),
+      radial-gradient(circle at 80% 10%, rgba(244,114,182,.08) 0%, rgba(15,23,42,0) 60%),
+      #060b16;
+  }
+
+  .appShell{
+    max-width:1280px;
+    margin:0 auto;
+    padding:1.5rem 1.5rem 3rem;
+    display:flex;
+    flex-direction:column;
+    gap:1.25rem;
+  }
+
+  .appHeader{
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    justify-content:space-between;
+    gap:1rem;
+    background:rgba(15,23,42,.7);
+    border:1px solid rgba(148,163,184,.18);
+    border-radius:var(--radius-lg);
+    padding:1rem 1.25rem;
+    box-shadow:0 20px 60px rgba(3,7,18,.65);
+    backdrop-filter:blur(16px) saturate(140%);
+  }
+
+  .brandBlock{ display:flex; flex-direction:column; gap:.35rem; }
+  .brandLine{ font-size:1.1rem; font-weight:700; display:flex; gap:.5rem; align-items:center; color:#f8fafc; }
+  .badge{ background:rgba(56,189,248,.15); border:1px solid rgba(56,189,248,.45); color:#7dd3fc; font-size:.7rem; font-weight:600; padding:.2rem .5rem; border-radius:999px; }
+  .headerMeta{ display:flex; flex-direction:column; gap:.4rem; min-width:260px; }
+  .statusRow{ display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  .statusChip{ font-size:.75rem; font-weight:600; background:rgba(15,23,42,.6); border:1px solid rgba(148,163,184,.3); padding:.35rem .6rem; border-radius:999px; color:#cbd5f5; }
+  .statusPill{ font-size:.72rem; background:rgba(30,41,59,.6); border:1px solid rgba(148,163,184,.2); padding:.25rem .5rem; border-radius:999px; color:#94a3b8; }
+  .actionFlash{ font-size:.7rem; color:#e2e8f0; opacity:.8; transition:opacity .2s ease; }
+  .actionFlash--ok{ color:var(--good); }
+  .actionFlash--warn{ color:var(--warn); }
+  .actionFlash--err{ color:var(--danger); }
+  .actionFlash--info{ color:#93c5fd; }
+
+  .navButtons{ display:flex; gap:.5rem; }
+  .flNavBtn{
+    background:#0b1220;
+    border:1px solid rgba(148,163,184,.2);
+    color:#e2e8f0;
+    font-size:.8rem;
+    font-weight:600;
+    padding:.5rem .85rem;
+    border-radius:999px;
+    cursor:pointer;
+    transition:all .15s ease;
+  }
+  .flNavBtn:hover{ border-color:rgba(56,189,248,.6); color:#7dd3fc; }
+  .flNavBtn--active{ background:rgba(56,189,248,.15); border-color:rgba(56,189,248,.5); color:#7dd3fc; }
+
+  .appMain{ display:flex; flex-direction:column; gap:1.25rem; }
+  .flView{ display:block; }
+  .flView[hidden]{ display:none; }
+
+  .scanGrid{
+    display:grid;
+    grid-template-columns:1.2fr .8fr;
+    gap:1.25rem;
+  }
+  @media (max-width:1000px){
+    .scanGrid{ grid-template-columns:1fr; }
+  }
+
+  .panel{
+    background:rgba(15,23,42,.7);
+    border:1px solid rgba(148,163,184,.18);
+    border-radius:var(--radius-lg);
+    padding:1rem;
+    box-shadow:0 12px 40px rgba(2,6,23,.6);
+    backdrop-filter:blur(18px) saturate(140%);
+  }
+
+  .panelHeader{ display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.75rem; }
+  .panelTitle{ font-weight:700; font-size:.95rem; color:#f8fafc; }
+  .panelSub{ font-size:.7rem; color:#94a3b8; }
+
+  .scanBox{ background:rgba(11,18,32,.9); border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); padding:.85rem; }
+  .scanBox label{ display:flex; justify-content:space-between; align-items:baseline; font-size:.75rem; color:#cbd5e1; margin-bottom:.5rem; }
+  .scanBox label small{ color:#64748b; }
+  #scanInput{ width:100%; background:#0f172a; border:1px solid rgba(148,163,184,.4); border-radius:var(--radius-md); color:#fff; font-family:var(--mono); font-size:1rem; outline:none; padding:.6rem .7rem; }
+  #scanInput:focus{ border-color:var(--accent); box-shadow:0 0 20px rgba(56,189,248,.35); }
+
+  .hintBox{ font-size:.7rem; color:#94a3b8; margin-top:.6rem; line-height:1.5; }
+  .hintBox ul{ margin:.35rem 0 0 1.1rem; padding:0; }
+
+  .quickActions{ display:flex; flex-wrap:wrap; gap:.5rem; margin-top:.75rem; }
+  .btn{ background:#0b1220; border:1px solid rgba(148,163,184,.25); color:#e2e8f0; border-radius:var(--radius-sm); padding:.45rem .7rem; font-size:.75rem; font-weight:600; cursor:pointer; transition:.15s ease; }
+  .btn:hover{ border-color:rgba(56,189,248,.5); color:#7dd3fc; }
+  .btnPrimary{ background:rgba(56,189,248,.2); border-color:rgba(56,189,248,.55); color:#7dd3fc; }
+  .btnDanger{ background:rgba(248,113,113,.15); border-color:rgba(248,113,113,.4); color:#fecaca; }
+
+  .miniGrid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:.75rem; margin-top:1rem; }
+  .card{ background:#0a0f1d; border:1px solid rgba(148,163,184,.25); border-radius:var(--radius-md); padding:.75rem; }
+  .cardHeader{ font-size:.7rem; color:#94a3b8; font-weight:700; margin-bottom:.5rem; }
+  .cardBody{ font-family:var(--mono); font-size:.82rem; line-height:1.45; color:#e2e8f0; white-space:pre-wrap; word-break:break-word; }
+
+  .infoStack{ display:grid; gap:.75rem; }
+  .infoRow{ display:flex; justify-content:space-between; font-size:.75rem; color:#cbd5e1; }
+  .infoRow strong{ color:#f8fafc; }
+
+  .addrBox,.svcBox{ background:#0a0f1d; border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); padding:.75rem; }
+  .addrBox label,.svcBox label{ font-size:.75rem; color:#cbd5e1; display:block; margin-bottom:.4rem; }
+  .addrBox .row{ display:flex; gap:.5rem; align-items:center; margin-bottom:.5rem; }
+  #addrSearch,#placeCode,#serviceOverride{ flex:1; background:#0f172a; border:1px solid rgba(148,163,184,.4); border-radius:var(--radius-md); color:#fff; font-family:var(--mono); font-size:.9rem; padding:.45rem .55rem; outline:none; }
+  #placeCode{ max-width:150px; }
+  #addrSearch:focus,#placeCode:focus,#serviceOverride:focus{ border-color:var(--accent); box-shadow:0 0 16px rgba(56,189,248,.35); }
+  .addrList{ max-height:160px; overflow:auto; border:1px solid rgba(148,163,184,.15); border-radius:var(--radius-md); background:#0b1222; }
+  .addrItem{ padding:.5rem; border-bottom:1px solid rgba(148,163,184,.12); font-size:.74rem; cursor:pointer; }
+  .addrItem:hover{ background:rgba(56,189,248,.08); }
+
+  .rightPane{ display:flex; flex-direction:column; gap:.75rem; }
+  .statusCard{ display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:.5rem; }
+  .statusTile{ background:rgba(15,23,42,.65); border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); padding:.6rem; font-size:.72rem; }
+  .statusTile strong{ display:block; font-size:1.1rem; margin-top:.2rem; color:#f8fafc; }
+
+  .quoteCard{ background:#0b1222; border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); padding:.65rem; font-family:var(--mono); font-size:.72rem; color:#7dd3fc; white-space:pre-wrap; }
+  .summaryCard{ background:#0b1222; border:1px solid rgba(148,163,184,.2); border-radius:var(--radius-md); padding:.65rem; font-family:var(--mono); font-size:.72rem; color:#e2e8f0; white-space:pre-wrap; max-height:200px; overflow:auto; }
+  .waybillSheetPreview{ background:#fff; color:#000; border-radius:var(--radius-md); padding:.75rem; font-family:var(--mono); font-size:.72rem; min-height:160px; overflow:auto; }
+
+  #debugLog{ display:none; background:#0a0f1d; border:1px solid rgba(248,113,113,.4); color:#f87171; font-family:var(--mono); font-size:.7rem; line-height:1.4; border-radius:var(--radius-md); padding:.75rem; margin-top:1rem; max-height:180px; overflow:auto; white-space:pre-wrap; }
+
+  /* Ops board */
+  .opsHeader{ display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:.75rem; }
+  .dispatchStamp{ font-size:.7rem; color:#94a3b8; font-family:var(--mono); }
+  .dispatchBoard{
+    display:grid;
+    grid-template-columns:repeat(4,minmax(0,1fr));
+    gap:1rem;
+    min-height:60vh;
+  }
+  @media (max-width:1100px){ .dispatchBoard{ grid-template-columns:repeat(3,1fr);} }
+  @media (max-width:900px){ .dispatchBoard{ grid-template-columns:repeat(2,1fr);} }
+  @media (max-width:600px){ .dispatchBoard{ grid-template-columns:1fr;} }
+
+  .dispatchCol{
+    background:rgba(15,23,42,.7);
+    border:1px solid rgba(148,163,184,.2);
+    border-radius:var(--radius-md);
+    padding:.75rem;
+    display:flex;
+    flex-direction:column;
+    gap:.5rem;
+    position:relative;
+  }
+  .dispatchCol::before{
+    content:"";
+    position:absolute;
+    inset:0 0 auto 0;
+    height:4px;
+    border-radius:var(--radius-md) var(--radius-md) 0 0;
+    background:rgba(56,189,248,.4);
+  }
+  .dispatchCol.lane--b2b::before{ background:#f97316; }
+  .dispatchCol.lane--delivery::before{ background:#38bdf8; }
+  .dispatchCol.lane--pickup::before{ background:#34d399; }
+  .dispatchCol.lane--online::before{ background:#a855f7; }
+  .dispatchColHeader{
+    font-size:.7rem;
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    color:#7dd3fc;
+    font-weight:700;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+  .dispatchColHeader .laneCount{ font-size:.65rem; color:#94a3b8; }
+  .dispatchColBody{ display:flex; flex-direction:column; gap:.5rem; overflow-y:auto; }
+  .dispatchCard{
+    background:#0b1222;
+    border:1px solid rgba(148,163,184,.2);
+    border-radius:.65rem;
+    padding:.65rem;
+    font-size:.72rem;
+    box-shadow:0 2px 8px rgba(2,6,23,.4);
+    display:grid;
+    gap:.45rem;
+  }
+  .dispatchCardTitle{ font-weight:700; color:#f8fafc; margin-bottom:.2rem; display:flex; justify-content:space-between; }
+  .dispatchCardMeta{ font-size:.65rem; color:#94a3b8; margin-bottom:.4rem; }
+  .dispatchCardAddress{ font-size:.67rem; color:#cbd5e1; margin-bottom:.35rem; }
+  .dispatchCardLines{ font-size:.68rem; color:#cbd5e1; white-space:pre-line; }
+  .dispatchCardActions{
+    display:grid;
+    gap:.35rem;
+  }
+  .dispatchInput, .dispatchSelect, .dispatchTextarea{
+    width:100%;
+    background:#0f172a;
+    border:1px solid rgba(148,163,184,.25);
+    border-radius:.5rem;
+    padding:.35rem .5rem;
+    color:#e2e8f0;
+    font-size:.68rem;
+    font-family:var(--mono);
+  }
+  .dispatchTextarea{ min-height:52px; resize:vertical; }
+  .dispatchBadge{
+    display:inline-flex;
+    align-items:center;
+    gap:.35rem;
+    font-size:.65rem;
+    padding:.2rem .45rem;
+    border-radius:999px;
+    border:1px solid rgba(148,163,184,.25);
+    color:#cbd5e1;
+    background:rgba(15,23,42,.6);
+  }
+  .dispatchBadge.status--ready{ color:#34d399; border-color:rgba(52,211,153,.4); }
+  .dispatchBadge.status--packing{ color:#fbbf24; border-color:rgba(251,191,36,.4); }
+  .dispatchBadge.status--done{ color:#60a5fa; border-color:rgba(96,165,250,.4); }
+  .dispatchLegend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:.5rem;
+    font-size:.65rem;
+    color:#cbd5e1;
+  }
+  .legendDot{ width:.5rem; height:.5rem; border-radius:999px; display:inline-block; margin-right:.25rem; }
+  .legendDot.b2b{ background:#f97316; }
+  .legendDot.delivery{ background:#38bdf8; }
+  .legendDot.pickup{ background:#34d399; }
+  .legendDot.online{ background:#a855f7; }
+
+  .infoPanelGrid{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr));
+    gap:1rem;
+    margin-top:1.25rem;
+  }
+  .infoPanelGrid ul{ margin:.35rem 0 0 1rem; padding:0; }
+  .dispatchBoardEmpty, .dispatchBoardEmptyCol{ font-size:.72rem; color:#94a3b8; text-align:center; padding:1rem 0; }
+
+  /* ===== PRINT LOCK (100×150mm exact) ===== */
+  @media print{
+    @page{ size:100mm 150mm; margin:0; }
+    html,body{ margin:0!important; padding:0!important; }
+    .appShell{ display:none!important; }
+    .printSheetWrapper{ display:block!important; }
+    .wb100x150{
+      width:calc(100mm / var(--print-scale))!important;
+      height:calc(150mm / var(--print-scale))!important;
+      transform:scale(var(--print-scale)); transform-origin:top left;
+      page-break-after:always; break-inside:avoid; overflow:hidden; background:#fff;
+    }
+    img{ print-color-adjust:exact; -webkit-print-color-adjust:exact; }
+  }
+
+  .printSheetWrapper{ display:none; padding:0; }
+  .wbPreviewZoom{ display:inline-block; transform:scale(.62); transform-origin:top left; }
+
+  /* ===== Waybill rubric (grid canvas) ===== */
+  .wb100x150{
+    box-sizing:border-box; padding:3mm 3.5mm; color:#000; font-family:var(--mono);
+    display:grid; grid-template-rows:18mm auto 52mm; row-gap:2mm;
+  }
+  .wbHead{ display:grid; grid-template-columns:1fr auto; grid-template-rows:auto auto 1fr; column-gap:3mm; row-gap:1mm; }
+  .wbHeadTitle{ grid-column:1/2; grid-row:1; font-size:3.6mm; line-height:1.2; font-weight:700; }
+  .wbTopCode{ grid-column:1/2; grid-row:1; display:flex; flex-direction:column; align-items:left; gap:0mm; }
+  .wbTopHuman{ font-size:4.2mm; font-weight:700; }
+  .wbBody{ display:grid; gap:2mm 3mm; margin-top:2mm; }
+  .wbFrom,.wbTo{ border:1px solid #000; border-radius:1mm; padding:2mm; font-size:3mm; line-height:1.32; background:#fff; }
+  .wbTo{ background:#f7f7f7; }
+  .wbBigCode{ grid-column:1/-1; border:1px solid #000; border-radius:1mm; padding:2mm; display:grid; grid-template-rows:auto 1fr auto; row-gap:1mm; }
+  .wbBigHuman{ font-size:3.6mm; font-weight:700; text-align:center; }
+  .wbBigCode svg{ width:100%; height:15mm; display:block; }
+  .wbMetaRow{ display:flex; justify-content:space-between; font-size:3mm; }
+  .wbFoot{ border-top:1px dashed #000; padding-top:2mm; display:grid; grid-template-columns:1fr; grid-auto-rows:minmax(0,1fr); row-gap:2mm; }
+  .podBox{ border:1px solid #000; border-radius:1mm; padding:2mm; font-size:3.2mm; line-height:1.35; display:grid; grid-template-rows:auto auto auto auto; row-gap:2mm; margin:0 auto; width:300px; }
+  .podTitle{ font-size:12px; font-weight:700; }
+</style>
+</head>
+<body>
+  <div class="appShell" role="application" aria-label="Flippen Lekka Scan Station">
+    <header class="appHeader">
+      <div class="brandBlock">
+        <div class="brandLine">Flippen Lekka Scan Station <span class="badge">v0.3</span></div>
+        <div class="panelSub">Fast scan → auto-book → print in one flow.</div>
+      </div>
+      <div class="headerMeta">
+        <div class="statusRow">
+          <span id="statusChip" class="statusChip">Ready</span>
+          <span class="statusPill">Auto-book in <span id="uiCountdown">--</span>s</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section>
+        <h2 class="sectionTitle">Open Orders</h2>
+        <div id="openOrders" class="orderGrid"></div>
+      </section>
+
+      <section>
+        <h2 class="sectionTitle">Recently Fulfilled</h2>
+        <div id="recentFulfilledEmpty" class="emptyState">No fulfilled orders stored yet.</div>
+        <table id="recentFulfilledTable" hidden>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Order #</th>
+              <th>Waybill #</th>
+              <th>Customer</th>
+              <th>Ship To</th>
+            </tr>
+          </thead>
+          <tbody id="recentFulfilledBody"></tbody>
+        </table>
+    <main class="appMain">
+      <section id="viewScan" class="flView flView--active">
+        <div class="scanGrid">
+          <div class="panel">
+            <div class="panelHeader">
+              <div>
+                <div class="panelTitle">Scan & Session</div>
+                <div class="panelSub">Live session details update as you scan.</div>
+              </div>
+              <div class="statusRow">
+                <button id="modeToggle" class="btn" type="button">MODE: AUTO</button>
+                <button id="emergencyStop" class="btn btnDanger" type="button">Clear Session</button>
+              </div>
+            </div>
+
+            <div class="scanBox">
+              <label for="scanInput"><span>Scan parcel sticker barcode</span><small>Example: 252051001</small></label>
+              <input id="scanInput" type="text" inputmode="numeric" autocomplete="off" placeholder="Focus here. Scanner types then Enter." aria-describedby="scanHelp" />
+              <div id="scanHelp" class="hintBox">
+                HOW IT WORKS:
+                <ul>
+                  <li>Orders can only be booked once (manual override required for repeats).</li>
+                  <li>Auto-book waits 6 seconds after the last scan unless disabled.</li>
+                  <li>Tagged orders auto-book instantly on first scan.</li>
+                </ul>
+              </div>
+              <div class="quickActions">
+                <button id="btnBookNow" class="btn btnPrimary" hidden>BOOK NOW</button>
+                <button id="focusScanner" class="btn" type="button">Focus Scanner</button>
+                <button id="toggleAddress" class="btn" type="button">Toggle Address</button>
+                <button id="toggleService" class="btn" type="button">Toggle Service</button>
+                <button id="copyShipTo" class="btn" type="button">Copy Ship-To</button>
+              </div>
+            </div>
+
+            <div class="miniGrid">
+              <div class="card">
+                <div class="cardHeader">Session Snapshot</div>
+                <div class="infoStack">
+                  <div class="infoRow">Order <strong id="uiOrderNo">--</strong></div>
+                  <div class="infoRow">Parcels scanned <strong id="uiParcelCount">0</strong></div>
+                </div>
+              </div>
+              <div class="card">
+                <div class="cardHeader">Session Parcels</div>
+                <div class="cardBody" id="parcelList">No parcels scanned yet.</div>
+              </div>
+              <div class="card">
+                <div class="cardHeader">Ship To</div>
+                <div class="cardBody" id="shipToCard">None yet.</div>
+              </div>
+              <div class="card">
+                <div class="cardHeader">Latest Booking</div>
+                <div class="cardBody" id="bookingSummary">No booking yet.</div>
+              </div>
+            </div>
+
+            <div class="addrBox" id="addrBox" hidden>
+              <label>Destination address <span class="panelSub" style="font-weight:400">(search & select)</span></label>
+              <div class="row">
+                <input id="addrSearch" type="text" placeholder="Type name, city, postal, street…" />
+                <input id="placeCode" type="text" placeholder="place code" title="ParcelPerfect place code (optional)" />
+              </div>
+              <div class="addrList" id="addrResults" role="listbox" aria-label="Address results"></div>
+              <div class="panelSub" style="margin-top:.4rem">Tip: selecting an item sets the destination + place code (if present).</div>
+            </div>
+
+            <div class="svcBox" id="svcBox" hidden>
+              <label for="serviceOverride">Service Preference</label>
+              <select id="serviceOverride" title="Choose a service or Auto">
+                <option value="AUTO">Auto (RFX→ECO→RDF→first)</option>
+                <option value="RFX">RFX (Road Express)</option>
+                <option value="ECO">ECO (Economy Road)</option>
+                <option value="RDF" selected>RDF (Roadfreight)</option>
+                <option value="ONX">ONX (Overnight Air)</option>
+                <option value="OVN">OVN (Overnight 2)</option>
+                <option value="CSS">CSS (ChainStores)</option>
+              </select>
+            </div>
+
+            <div id="debugLog" aria-live="polite"></div>
+          </div>
+
+          <div class="panel rightPane">
+            <div class="panelHeader">
+              <div>
+                <div class="panelTitle">Booking Monitor</div>
+                <div class="panelSub">Quotes, status, and label preview.</div>
+              </div>
+              <div class="statusRow">
+                <span class="statusPill">Auto mode: <span id="autoModeStatus">ON</span></span>
+              </div>
+            </div>
+
+            <div class="statusCard">
+              <div class="statusTile">Estimated cost<div id="quoteBox" class="panelSub" style="margin-top:.25rem">No quote yet.</div></div>
+              <div class="statusTile">Service<div class="panelSub" id="serviceDisplay" style="margin-top:.25rem">Auto</div></div>
+            </div>
+
+            <div class="summaryCard" id="bookingSummaryCard">Booking details will appear here after booking.</div>
+
+            <div class="panelHeader">
+              <div class="panelTitle">Waybill Label Preview (100×150 mm)</div>
+              <div class="panelSub">Auto prints after booking</div>
+            </div>
+            <div class="waybillSheetPreview" id="stickerPreview" aria-live="polite">(Will show label after first booking)</div>
+          </div>
+        </div>
+
+        <div class="infoPanelGrid">
+          <div class="panel">
+            <div class="panelTitle">Help & Operator Tips</div>
+            <div class="panelSub">Quick guidance for the scan station workflow.</div>
+            <ul class="panelSub">
+              <li>Scan parcels to build the session, then book or wait for auto-book.</li>
+              <li>Use “Toggle Address” to override destinations and place codes.</li>
+              <li>Track packing progress in the Dispatch Board lanes.</li>
+              <li>Copy Ship-To details for manual notes or labels.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <div class="panelTitle">Changelog</div>
+            <div class="panelSub">Latest updates in this station.</div>
+            <ul class="panelSub">
+              <li>Refreshed scan layout and added quick actions.</li>
+              <li>Added dispatch lane controls for packing status and box logs.</li>
+              <li>Introduced auto-book toggle with countdown feedback.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <div class="panelTitle">Upcoming Features / To‑Do</div>
+            <div class="panelSub">What’s coming next.</div>
+            <ul class="panelSub">
+              <li>Barcode-driven packing list import per box.</li>
+              <li>Team assignment and shift handover notes.</li>
+              <li>Automated alerts for overdue or incomplete lanes.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="viewOps" class="flView" hidden>
+        <div class="panel">
+          <div class="opsHeader">
+            <div>
+              <div class="panelTitle">Dispatch Whiteboard</div>
+              <div class="panelSub">Open orders needing fulfillment.</div>
+            </div>
+            <div id="dispatchStamp" class="dispatchStamp">–</div>
+          </div>
+          <div class="dispatchLegend" aria-label="Dispatch lane legend">
+            <span><span class="legendDot b2b"></span>B2B Shipping</span>
+            <span><span class="legendDot delivery"></span>Local Delivery</span>
+            <span><span class="legendDot pickup"></span>Local Pickup</span>
+            <span><span class="legendDot online"></span>Online Orders</span>
+          </div>
+          <div class="dispatchBoard" id="dispatchBoard">
+            <div class="dispatchBoardEmpty">Loading open orders…</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+  <script src="/app.js"></script>
+</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dispatch / Fulfillment Board</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1220;
+        --panel: #0f172a;
+        --panel-2: #111c35;
+        --border: #1f2a44;
+        --text: #e2e8f0;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+        --accent-2: #22c55e;
+        --warn: #f59e0b;
+        --danger: #ef4444;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
+
+      header {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        background: rgba(10, 15, 30, 0.9);
+        backdrop-filter: blur(6px);
+        border-bottom: 1px solid var(--border);
+      }
+
+      .shell {
+        max-width: 1240px;
+        margin: 0 auto;
+        padding: 1.5rem;
+      }
+
+      .headerRow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+
+      .titleBlock h1 {
+        margin: 0;
+        font-size: 1.6rem;
+      }
+
+      .titleBlock p {
+        margin: 0.35rem 0 0;
+        color: var(--muted);
+      }
+
+      button {
+        border: 1px solid transparent;
+        border-radius: 10px;
+        padding: 0.5rem 0.9rem;
+        font-size: 0.9rem;
+        cursor: pointer;
+        background: var(--panel-2);
+        color: var(--text);
+      }
+
+      button.primary {
+        background: var(--accent);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.success {
+        background: var(--accent-2);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.warn {
+        background: var(--warn);
+        color: #0b1220;
+        font-weight: 600;
+      }
+
+      button.ghost {
+        background: transparent;
+        border-color: var(--border);
+        color: var(--muted);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .sectionTitle {
+        margin: 2rem 0 0.75rem;
+        font-size: 1.2rem;
+      }
+
+      .orderGrid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        gap: 1.25rem;
+      }
+
+      .orderCard {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        padding: 1rem;
+        display: flex;
+        flex-direction: column;
+        gap: 0.9rem;
+      }
+
+      .cardHeader {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+
+      .cardHeader h3 {
+        margin: 0;
+        font-size: 1.05rem;
+      }
+
+      .muted {
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .chipRow {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+
+      .chip {
+        border-radius: 999px;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.7rem;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+
+      .chip.ok {
+        border-color: rgba(34, 197, 94, 0.5);
+        color: #86efac;
+      }
+
+      .chip.warn {
+        border-color: rgba(245, 158, 11, 0.5);
+        color: #fde68a;
+      }
+
+      .chip.err {
+        border-color: rgba(239, 68, 68, 0.6);
+        color: #fca5a5;
+      }
+
+      .lineItems {
+        border-top: 1px dashed var(--border);
+        padding-top: 0.75rem;
+        display: grid;
+        gap: 0.35rem;
+      }
+
+      .lineItem {
+        display: flex;
+        justify-content: space-between;
+        gap: 0.5rem;
+        font-size: 0.85rem;
+      }
+
+      .cardActions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+
+      .editor {
+        background: rgba(15, 23, 42, 0.6);
+        border-radius: 12px;
+        padding: 0.75rem;
+        border: 1px solid var(--border);
+      }
+
+      .editor h4 {
+        margin: 0 0 0.5rem;
+        font-size: 0.95rem;
+      }
+
+      .remainingList {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.8rem;
+      }
+
+      .boxCard {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 0.6rem;
+        margin-top: 0.6rem;
+      }
+
+      .boxHeader {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.4rem;
+      }
+
+      .qtyRow {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.5rem;
+        padding: 0.25rem 0;
+        font-size: 0.8rem;
+      }
+
+      .qtyControls {
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+      }
+
+      .qtyControls button {
+        padding: 0.2rem 0.45rem;
+        border-radius: 8px;
+      }
+
+      .milestones {
+        display: grid;
+        gap: 0.3rem;
+        font-size: 0.75rem;
+      }
+
+      .milestone {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 0.4rem;
+      }
+
+      .milestone span {
+        color: var(--muted);
+      }
+
+      .milestone .state.ok {
+        color: #4ade80;
+      }
+
+      .milestone .state.err {
+        color: #f87171;
+      }
+
+      .progress {
+        display: flex;
+        gap: 0.4rem;
+        flex-wrap: wrap;
+      }
+
+      .progressStep {
+        padding: 0.2rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        border: 1px solid var(--border);
+        color: var(--muted);
+      }
+
+      .progressStep.active {
+        color: #93c5fd;
+        border-color: rgba(59, 130, 246, 0.5);
+      }
+
+      .progressStep.done {
+        color: #86efac;
+        border-color: rgba(34, 197, 94, 0.5);
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+
+      th,
+      td {
+        padding: 0.75rem;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        font-size: 0.85rem;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .emptyState {
+        padding: 1rem;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        color: var(--muted);
+      }
+
+      .logList {
+        max-height: 140px;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.5rem;
+        font-size: 0.75rem;
+        background: rgba(15, 23, 42, 0.4);
+      }
+
+      .logEntry {
+        display: flex;
+        gap: 0.35rem;
+        align-items: center;
+        padding: 0.15rem 0;
+      }
+
+      .logEntry.ok::before {
+        content: "✔";
+        color: #22c55e;
+      }
+
+      .logEntry.err::before {
+        content: "✖";
+        color: #ef4444;
+      }
+
+      .logEntry.info::before {
+        content: "•";
+        color: var(--muted);
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+
+      @media (max-width: 720px) {
+        .headerRow {
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="shell headerRow">
+        <div class="titleBlock">
+          <h1>Dispatch / Fulfillment Board</h1>
+          <p>Pack, book, print, fulfill, and archive with ParcelPerfect + Shopify.</p>
+        </div>
+        <div class="toolbar">
+          <button id="refreshBtn" class="ghost">Refresh</button>
+          <button id="clearStorageBtn" class="ghost">Reset Local Cache</button>
         </div>
       </div>
     </header>
